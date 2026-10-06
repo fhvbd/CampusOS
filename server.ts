@@ -3,6 +3,7 @@ import cors from 'cors';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
+import { INITIAL_USER, INITIAL_COURSES, INITIAL_NOTICES, INITIAL_TASKS, INITIAL_SETTINGS } from './src/mockData';
 
 const app = express();
 const PORT = 3000;
@@ -10,25 +11,12 @@ const PORT = 3000;
 app.use(cors());
 app.use(express.json());
 
-// In-Memory mock state for server (resilient & ephemeral)
-let userProfile = {
-  student_id: '20260309108',
-  username: '张明远',
-  university: '华东理工大学',
-  college: '信息科学与工程学院',
-  major: '计算机科学与技术 (卓越班)',
-  grade: '2026级',
-  class_name: '计卓261班',
-  gpa: 3.84,
-  credits_earned: 42.5,
-  credits_total: 160,
-  campus_card_balance: 168.5,
-  library_books_borrowed: 3,
-  dormitory_room: '知行苑 7号楼 402',
-  net_status: 'online',
-  cas_sync_status: 'synced',
-  last_sync_time: '2026-08-31 07:45',
-};
+// In-Memory state for server (ephemeral)
+let userProfile = { ...INITIAL_USER };
+let courses = [...INITIAL_COURSES];
+let notices = [...INITIAL_NOTICES];
+let tasks = [...INITIAL_TASKS];
+let settings = { ...INITIAL_SETTINGS };
 
 // Lazy initialize Gemini API client
 let aiClient: GoogleGenAI | null = null;
@@ -126,11 +114,76 @@ app.post('/api/ai/chat', async (req, res) => {
   });
 });
 
+// 5. Courses
+app.get('/api/course/list', (req, res) => {
+  res.json(courses);
+});
+
+app.post('/api/course/save', (req, res) => {
+  const course = req.body;
+  const index = courses.findIndex(c => c.id === course.id);
+  if (index >= 0) {
+    courses[index] = course;
+  } else {
+    courses.push(course);
+  }
+  res.json({ success: true, courses });
+});
+
+app.delete('/api/course/delete/:id', (req, res) => {
+  const { id } = req.params;
+  courses = courses.filter(c => c.id !== id);
+  res.json({ success: true, courses });
+});
+
+// 6. Notices
+app.get('/api/notice/list', (req, res) => {
+  res.json(notices);
+});
+
+app.post('/api/notice/read/:id', (req, res) => {
+  const { id } = req.params;
+  notices = notices.map(n => n.id === id ? { ...n, is_read: true } : n);
+  res.json({ success: true, notices });
+});
+
+// 7. Tasks
+app.get('/api/task/list', (req, res) => {
+  res.json(tasks);
+});
+
+app.post('/api/task/create', (req, res) => {
+  const task = req.body;
+  const index = tasks.findIndex(t => t.id === task.id);
+  if (index >= 0) {
+    tasks[index] = task;
+  } else {
+    tasks = [task, ...tasks];
+  }
+  res.json({ success: true, tasks });
+});
+
+app.delete('/api/task/delete/:id', (req, res) => {
+  const { id } = req.params;
+  tasks = tasks.filter(t => t.id !== id);
+  res.json({ success: true, tasks });
+});
+
+// 8. Settings
+app.get('/api/settings', (req, res) => {
+  res.json(settings);
+});
+
+app.put('/api/settings', (req, res) => {
+  settings = { ...settings, ...req.body };
+  res.json(settings);
+});
+
 async function startServer() {
   // Vite integration in development
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
-      server: { middlewareMode: true, host: '0.0.0.0', port: 3000 },
+      server: { middlewareMode: true, host: '0.0.0.0', port: 3000, allowedHosts: true },
       appType: 'spa',
     });
     app.use(vite.middlewares);
