@@ -23,7 +23,8 @@ import {
   Sliders,
   Flame,
   FileText,
-  Monitor
+  Monitor,
+  MessageSquare
 } from 'lucide-react';
 import { TabType } from '../types';
 
@@ -52,6 +53,7 @@ interface CommandPaletteProps {
   onOpenImport: () => void;
   onResetData: () => void;
   onTriggerAIPrompt: (prompt: string) => void;
+  onOpenGroupMessageTodo?: () => void;
 }
 
 export const CommandPalette: React.FC<CommandPaletteProps> = ({
@@ -67,6 +69,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
   onOpenImport,
   onResetData,
   onTriggerAIPrompt,
+  onOpenGroupMessageTodo,
 }) => {
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -143,6 +146,21 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
         onClose();
         if (onOpenPwaModal) {
           onOpenPwaModal();
+        }
+      },
+    },
+    {
+      id: 'action-group-message-todo',
+      title: 'AI 群消息待办提取中心',
+      category: 'actions',
+      categoryLabel: '核心操作',
+      icon: MessageSquare,
+      keywords: ['群消息', '群聊', '待办', '提取', 'wechat', 'qq', 'chat', 'todo', '作业'],
+      description: '大模型智能抓取QQ/微信班级群聊天记录中的作业、会议与表单行动项',
+      action: () => {
+        onClose();
+        if (onOpenGroupMessageTodo) {
+          onOpenGroupMessageTodo();
         }
       },
     },

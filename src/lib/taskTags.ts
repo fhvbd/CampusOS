@@ -14,7 +14,13 @@ import {
   MessageSquare,
   FileCheck,
   Building,
-  Target
+  Target,
+  Folder,
+  Briefcase,
+  Layers,
+  Bookmark,
+  Rocket,
+  Compass
 } from 'lucide-react';
 import { TaskCategory } from '../types';
 
@@ -208,8 +214,132 @@ export function getTaskTagIcon(iconName: string): React.FC<{ className?: string 
       return Sparkles;
     case 'Building':
       return Building;
+    case 'Folder':
+      return Folder;
+    case 'Tag':
+      return TagIcon;
+    case 'Briefcase':
+      return Briefcase;
+    case 'Layers':
+      return Layers;
+    case 'Bookmark':
+      return Bookmark;
+    case 'Rocket':
+      return Rocket;
+    case 'Compass':
+      return Compass;
+    case 'Target':
+      return Target;
     case 'BookOpen':
     default:
       return BookOpen;
   }
 }
+
+export interface CategoryColorStyle {
+  id: string;
+  label: string;
+  bgClass: string;
+  textClass: string;
+  borderClass: string;
+  badgeClass: string;
+  dotColor: string;
+}
+
+export const CUSTOM_CATEGORY_COLORS: Record<string, CategoryColorStyle> = {
+  purple: {
+    id: 'purple',
+    label: '紫罗兰',
+    bgClass: 'bg-purple-500/15',
+    textClass: 'text-purple-700',
+    borderClass: 'border-purple-500/25',
+    badgeClass: 'bg-purple-500/10 text-purple-700 border-purple-500/25',
+    dotColor: '#a855f7',
+  },
+  indigo: {
+    id: 'indigo',
+    label: '经典靛蓝',
+    bgClass: 'bg-indigo-500/15',
+    textClass: 'text-indigo-700',
+    borderClass: 'border-indigo-500/25',
+    badgeClass: 'bg-indigo-500/10 text-indigo-700 border-indigo-500/25',
+    dotColor: '#6366f1',
+  },
+  cyan: {
+    id: 'cyan',
+    label: '科技青',
+    bgClass: 'bg-cyan-500/15',
+    textClass: 'text-cyan-700',
+    borderClass: 'border-cyan-500/25',
+    badgeClass: 'bg-cyan-500/10 text-cyan-700 border-cyan-500/25',
+    dotColor: '#06b6d4',
+  },
+  emerald: {
+    id: 'emerald',
+    label: '翡翠绿',
+    bgClass: 'bg-emerald-500/15',
+    textClass: 'text-emerald-700',
+    borderClass: 'border-emerald-500/25',
+    badgeClass: 'bg-emerald-500/10 text-emerald-700 border-emerald-500/25',
+    dotColor: '#10b981',
+  },
+  amber: {
+    id: 'amber',
+    label: '琥珀金',
+    bgClass: 'bg-amber-500/15',
+    textClass: 'text-amber-700',
+    borderClass: 'border-amber-500/25',
+    badgeClass: 'bg-amber-500/10 text-amber-700 border-amber-500/25',
+    dotColor: '#f59e0b',
+  },
+  rose: {
+    id: 'rose',
+    label: '玫瑰红',
+    bgClass: 'bg-rose-500/15',
+    textClass: 'text-rose-700',
+    borderClass: 'border-rose-500/25',
+    badgeClass: 'bg-rose-500/10 text-rose-700 border-rose-500/25',
+    dotColor: '#f43f5e',
+  },
+  blue: {
+    id: 'blue',
+    label: '天穹蓝',
+    bgClass: 'bg-blue-500/15',
+    textClass: 'text-blue-700',
+    borderClass: 'border-blue-500/25',
+    badgeClass: 'bg-blue-500/10 text-blue-700 border-blue-500/25',
+    dotColor: '#3b82f6',
+  },
+  slate: {
+    id: 'slate',
+    label: '极简灰',
+    bgClass: 'bg-slate-500/15',
+    textClass: 'text-slate-700',
+    borderClass: 'border-slate-500/25',
+    badgeClass: 'bg-slate-500/10 text-slate-700 border-slate-500/25',
+    dotColor: '#64748b',
+  },
+};
+
+export function getCategoryColorClasses(colorName?: string): CategoryColorStyle {
+  if (colorName && CUSTOM_CATEGORY_COLORS[colorName]) {
+    return CUSTOM_CATEGORY_COLORS[colorName];
+  }
+  return CUSTOM_CATEGORY_COLORS.indigo;
+}
+
+export const CATEGORY_ICON_OPTIONS = [
+  { id: 'Folder', label: '项目目录', icon: Folder },
+  { id: 'Sparkles', label: '创新亮点', icon: Sparkles },
+  { id: 'Code2', label: '算法代码', icon: Code2 },
+  { id: 'GraduationCap', label: '升学深造', icon: GraduationCap },
+  { id: 'Target', label: '目标冲刺', icon: Target },
+  { id: 'BookOpen', label: '课业专栏', icon: BookOpen },
+  { id: 'Award', label: '竞赛荣誉', icon: Award },
+  { id: 'FileText', label: '论文文献', icon: FileText },
+  { id: 'Briefcase', label: '实习就业', icon: Briefcase },
+  { id: 'Users', label: '团队小组', icon: Users },
+  { id: 'FlaskConical', label: '实验研究', icon: FlaskConical },
+  { id: 'Rocket', label: '孵化启动', icon: Rocket },
+  { id: 'Tag', label: '普通标签', icon: TagIcon },
+];

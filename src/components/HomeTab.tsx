@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { 
   BookOpen, 
   Clock, 
@@ -21,11 +21,27 @@ import {
   ArrowUpRight,
   Tag as TagIcon,
   Flame,
-  Target
+  Target,
+  MessageSquare,
+  GripVertical,
+  ChevronUp,
+  ChevronDown,
+  Edit3,
+  Calendar,
+  Repeat,
+  Timer,
+  Share2,
+  ListTodo
 } from 'lucide-react';
-import { Course, Notice, Task, UserProfile, AppSettings, TabType } from '../types';
+import { Course, Notice, Task, UserProfile, AppSettings, TabType, CustomTaskCategory } from '../types';
 import { COURSE_COLOR_MAP, getFullDayName } from '../lib/utils';
-import { detectTaskAutoTag, getTaskTagIcon, TASK_TAG_RULES } from '../lib/taskTags';
+import { detectTaskAutoTag, getTaskTagIcon, TASK_TAG_RULES, getCategoryColorClasses } from '../lib/taskTags';
+import { copyTaskShareLink } from '../lib/taskShare';
+import { DailyDigest } from './DailyDigest';
+import { TaskInsights } from './TaskInsights';
+import { SmartStudyPlanModal } from './SmartStudyPlanModal';
+import { WeeklyGoalWidget } from './WeeklyGoalWidget';
+import { NotificationManager } from '../lib/notifications';
 
 interface HomeTabProps {
   user: UserProfile;
@@ -40,6 +56,15 @@ interface HomeTabProps {
   onOpenAddTask: () => void;
   onOpenAddCourse: () => void;
   onAskAI: (prompt: string) => void;
+  onOpenGroupMessageTodo?: () => void;
+  customCategories?: CustomTaskCategory[];
+  onReorderTasks?: (reorderedTasks: Task[]) => void;
+  onSelectTask?: (task: Task) => void;
+  onSaveTask?: (task: Task) => void;
+  onStartTaskFocus?: (task: Task) => void;
+  showToast?: (message: string) => void;
+  activeTagFilter?: string;
+  onSelectTagFilter?: (tag: string) => void;
 }
 
 export const HomeTab: React.FC<HomeTabProps> = ({
@@ -55,9 +80,89 @@ export const HomeTab: React.FC<HomeTabProps> = ({
   onOpenAddTask,
   onOpenAddCourse,
   onAskAI,
+  onOpenGroupMessageTodo,
+  customCategories,
+  onReorderTasks,
+  onSelectTask,
+  onSaveTask,
+  onStartTaskFocus,
+  showToast,
+  activeTagFilter,
+  onSelectTagFilter,
 }) => {
-  const [selectedTagFilter, setSelectedTagFilter] = useState<string>('all');
+  const [selectedTagFilter, setSelectedTagFilter] = useState<string>(activeTagFilter || 'all');
+
+  // Keep in sync with parent activeTagFilter
+  React.useEffect(() => {
+    if (activeTagFilter !== undefined) {
+      setSelectedTagFilter(activeTagFilter);
+    }
+  }, [activeTagFilter]);
+
+  const handleUpdateTagFilter = (newTag: string) => {
+    setSelectedTagFilter(newTag);
+    if (onSelectTagFilter) {
+      onSelectTagFilter(newTag);
+    }
+  };
+
   const [showCompletedTasks, setShowCompletedTasks] = useState(false);
+  const [draggedTaskId, setDraggedTaskId] = useState<string | null>(null);
+  const [dragOverTaskId, setDragOverTaskId] = useState<string | null>(null);
+  const [isStudyPlanModalOpen, setIsStudyPlanModalOpen] = useState(false);
+
+  // Manual drag-and-drop reordering handler for tasks
+  const handleDropTask = (targetTaskId: string) => {
+    if (!draggedTaskId || draggedTaskId === targetTaskId) {
+      setDraggedTaskId(null);
+      setDragOverTaskId(null);
+      return;
+    }
+
+    const draggedTask = tasks.find(t => t.id === draggedTaskId);
+    if (!draggedTask) {
+      setDraggedTaskId(null);
+      setDragOverTaskId(null);
+      return;
+    }
+
+    // High-priority manual reordering
+    const fromIndex = tasks.findIndex(t => t.id === draggedTaskId);
+    const toIndex = tasks.findIndex(t => t.id === targetTaskId);
+    if (fromIndex === -1 || toIndex === -1) {
+      setDraggedTaskId(null);
+      setDragOverTaskId(null);
+      return;
+    }
+
+    const reordered = [...tasks];
+    const [moved] = reordered.splice(fromIndex, 1);
+    reordered.splice(toIndex, 0, moved);
+
+    if (onReorderTasks) {
+      onReorderTasks(reordered);
+    }
+
+    setDraggedTaskId(null);
+    setDragOverTaskId(null);
+  };
+
+  // Keyboard/button manual reorder step
+  const handleMoveTask = (taskId: string, direction: 'up' | 'down') => {
+    const fromIndex = tasks.findIndex(t => t.id === taskId);
+    if (fromIndex === -1) return;
+
+    const targetIndex = direction === 'up' ? fromIndex - 1 : fromIndex + 1;
+    if (targetIndex < 0 || targetIndex >= tasks.length) return;
+
+    const reordered = [...tasks];
+    const [moved] = reordered.splice(fromIndex, 1);
+    reordered.splice(targetIndex, 0, moved);
+
+    if (onReorderTasks) {
+      onReorderTasks(reordered);
+    }
+  };
 
   // Calculate today's courses (day_of_week 1-7)
   const today = new Date();
@@ -71,6 +176,12 @@ export const HomeTab: React.FC<HomeTabProps> = ({
     if (!showCompletedTasks && t.is_completed) return false;
     if (showCompletedTasks && !t.is_completed) return false;
     if (selectedTagFilter === 'all') return true;
+
+    if (selectedTagFilter.startsWith('custom:')) {
+      const catId = selectedTagFilter.replace('custom:', '');
+      return t.custom_category_id === catId || t.custom_category_name === catId || t.project_tag === catId;
+    }
+
     const tag = detectTaskAutoTag(t.title, t.category);
     return tag.id === selectedTagFilter || tag.label === selectedTagFilter;
   });
@@ -96,6 +207,11 @@ export const HomeTab: React.FC<HomeTabProps> = ({
   );
   const completedTodayHighCount = todayHighPriorityTasks.filter(t => t.is_completed).length;
   const pendingTodayHighCount = todayHighPriorityTasks.filter(t => !t.is_completed).length;
+
+  // Tasks due within next 2 hours (monitored by desktop notification engine)
+  const dueTasks2h = useMemo(() => {
+    return NotificationManager.getTasksDueWithinHours(tasks, 2);
+  }, [tasks]);
 
   return (
     <div className="space-y-8 sm:space-y-10 pb-16">
@@ -141,18 +257,42 @@ export const HomeTab: React.FC<HomeTabProps> = ({
               💡 <strong>AI 建议</strong>：本周国家奖学金申报开放中；工程制图大作业将于明晚截止，建议优先安排。
             </span>
           </div>
-          <button
-            onClick={() => onNavigateTab('ai')}
-            className="inline-flex items-center gap-2 font-bold text-white bg-white/25 hover:bg-white/35 active:scale-95 transition-all px-4 py-2 rounded-xl border border-white/40 shadow-xs cursor-pointer self-start sm:self-auto backdrop-blur-md shrink-0"
-          >
-            <Sparkles className="h-4 w-4 text-amber-300" />
-            <span>智能学习问答</span>
-            <ChevronRight className="h-4 w-4" />
-          </button>
+          <div className="flex items-center gap-2.5 flex-wrap self-start sm:self-auto shrink-0">
+            <button
+              onClick={() => setIsStudyPlanModalOpen(true)}
+              className="inline-flex items-center gap-2 font-black text-indigo-950 bg-white/90 hover:bg-white active:scale-95 transition-all px-4 py-2 rounded-xl border border-white shadow-md shadow-black/10 cursor-pointer backdrop-blur-md shrink-0"
+              title="使用 Gemini 智能生成专属自习与备考时间表"
+            >
+              <Sparkles className="h-4 w-4 text-purple-600 animate-pulse" />
+              <span>智能自习规划 (Smart Study Plan)</span>
+            </button>
+            <button
+              onClick={() => onNavigateTab('ai')}
+              className="inline-flex items-center gap-2 font-bold text-white bg-white/25 hover:bg-white/35 active:scale-95 transition-all px-4 py-2 rounded-xl border border-white/40 shadow-xs cursor-pointer backdrop-blur-md shrink-0"
+            >
+              <Sparkles className="h-4 w-4 text-amber-300" />
+              <span>智能学习问答</span>
+              <ChevronRight className="h-4 w-4" />
+            </button>
+          </div>
         </div>
       </div>
 
-      {/* 2. Today's Overview Card: Aggregated High-Priority Tasks Due Today */}
+      {/* 2. Morning Briefing: Daily Digest (Upcoming Classes, Overdue Tasks, Urgent Notices) */}
+      <DailyDigest
+        user={user}
+        settings={settings}
+        courses={courses}
+        notices={notices}
+        tasks={tasks}
+        onNavigateTab={onNavigateTab}
+        onSelectCourse={onSelectCourse}
+        onSelectNotice={onSelectNotice}
+        onToggleTask={onToggleTask}
+        onOpenAddTask={onOpenAddTask}
+      />
+
+      {/* 3. Today's Overview Card: Aggregated High-Priority Tasks Due Today */}
       <div className="glass-panel rounded-3xl p-6 sm:p-7 space-y-5 border border-white/80 shadow-md shadow-slate-900/5 relative overflow-hidden">
         {/* Decorative subtle accent ambient glow */}
         <div className="absolute top-0 right-0 w-80 h-80 bg-linear-to-bl from-rose-500/10 via-amber-500/5 to-transparent rounded-full blur-3xl pointer-events-none" />
@@ -175,15 +315,23 @@ export const HomeTab: React.FC<HomeTabProps> = ({
             </div>
           </div>
 
-          <div className="flex items-center gap-3 self-start sm:self-auto">
+          <div className="flex items-center gap-2.5 self-start sm:self-auto flex-wrap">
             {todayHighPriorityTasks.length > 0 && (
-              <div className="text-right hidden md:block">
+              <div className="text-right hidden md:block mr-1">
                 <div className="text-[11px] font-black text-slate-500">今日高优达成率</div>
                 <div className="text-xs font-mono font-bold text-slate-800">
                   {completedTodayHighCount} / {todayHighPriorityTasks.length} ({todayHighPriorityTasks.length > 0 ? Math.round((completedTodayHighCount / todayHighPriorityTasks.length) * 100) : 100}%)
                 </div>
               </div>
             )}
+            <button
+              onClick={() => setIsStudyPlanModalOpen(true)}
+              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-linear-to-r from-indigo-600 via-indigo-500 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white text-xs font-black transition-all shadow-md shadow-indigo-500/20 cursor-pointer active:scale-95 shrink-0"
+              title="基于高优待办与课程截止，生成智能自习规划"
+            >
+              <Sparkles className="h-3.5 w-3.5 text-amber-300" />
+              <span>智能自习规划</span>
+            </button>
             <button
               onClick={onOpenAddTask}
               className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-black transition-all shadow-xs cursor-pointer active:scale-95 shrink-0"
@@ -193,6 +341,48 @@ export const HomeTab: React.FC<HomeTabProps> = ({
             </button>
           </div>
         </div>
+
+        {/* 2-Hour Due Tasks Desktop Notification Alert Banner */}
+        {dueTasks2h.length > 0 && (
+          <div className="p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/25 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xs animate-in fade-in duration-200">
+            <div className="flex items-center gap-2.5">
+              <div className="h-8 w-8 rounded-xl bg-amber-500/20 text-amber-700 flex items-center justify-center shrink-0">
+                <Bell className="h-4 w-4 animate-bounce" />
+              </div>
+              <div>
+                <div className="text-xs font-black text-amber-900 flex items-center gap-1.5">
+                  <span>⏰ 临界预警：发现 {dueTasks2h.length} 项待办将在 2 小时内截止！</span>
+                  <span className="text-[10px] px-2 py-0.2 rounded-full bg-amber-500 text-white font-bold">
+                    桌面弹窗已监控
+                  </span>
+                </div>
+                <div className="text-[11px] text-amber-700/90 font-medium truncate max-w-lg mt-0.5">
+                  最紧迫：【{dueTasks2h[0].task.title}】
+                  {dueTasks2h[0].minutesLeft <= 0 
+                    ? ' 即将截止' 
+                    : ` 还剩约 ${dueTasks2h[0].minutesLeft} 分钟 (${dueTasks2h[0].task.deadline})`}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 self-start sm:self-auto shrink-0">
+              <button
+                type="button"
+                onClick={() => {
+                  if (NotificationManager.getPermission() !== 'granted') {
+                    NotificationManager.requestPermission();
+                  } else {
+                    NotificationManager.sendTaskDueNotification(dueTasks2h[0].task, dueTasks2h[0].minutesLeft, onSelectTask, true);
+                  }
+                }}
+                className="px-3 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold transition-all shadow-2xs cursor-pointer active:scale-95 flex items-center gap-1"
+              >
+                <Bell className="h-3 w-3" />
+                <span>{NotificationManager.getPermission() === 'granted' ? '发送桌面提醒测试' : '开启桌面通知权限'}</span>
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Progress Bar when there are today high priority tasks */}
         {todayHighPriorityTasks.length > 0 && (
@@ -223,16 +413,54 @@ export const HomeTab: React.FC<HomeTabProps> = ({
               const autoTag = detectTaskAutoTag(task.title, task.category);
               const TagIcon = getTaskTagIcon(task.auto_tag_icon || autoTag.iconName);
               const displayLabel = task.auto_tag_label || autoTag.label;
+              const isDragging = draggedTaskId === task.id;
+              const isOver = dragOverTaskId === task.id;
 
               return (
                 <div
                   key={task.id}
-                  className={`p-4 rounded-2xl border transition-all flex items-start gap-3.5 group shadow-2xs hover:shadow-xs ${
+                  draggable={!task.is_completed}
+                  onDragStart={(e) => {
+                    e.dataTransfer.setData('text/plain', task.id);
+                    setDraggedTaskId(task.id);
+                  }}
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    if (draggedTaskId && draggedTaskId !== task.id) {
+                      setDragOverTaskId(task.id);
+                    }
+                  }}
+                  onDragLeave={() => {
+                    if (dragOverTaskId === task.id) setDragOverTaskId(null);
+                  }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    handleDropTask(task.id);
+                  }}
+                  onDragEnd={() => {
+                    setDraggedTaskId(null);
+                    setDragOverTaskId(null);
+                  }}
+                  className={`p-4 rounded-2xl border transition-all flex items-start gap-3 group shadow-2xs hover:shadow-xs relative ${
                     task.is_completed
                       ? 'bg-white/40 border-slate-200/60 opacity-70'
                       : 'bg-white/80 hover:bg-white border-white/90 ring-1 ring-rose-500/10'
+                  } ${
+                    isDragging ? 'opacity-40 border-dashed border-rose-400 bg-rose-50/40 scale-[0.99]' : ''
+                  } ${
+                    isOver ? 'ring-2 ring-rose-500 bg-rose-50/90 border-rose-400 scale-[1.01]' : ''
                   }`}
                 >
+                  {/* Drag Grip Handle */}
+                  {!task.is_completed && (
+                    <div 
+                      className="cursor-grab active:cursor-grabbing text-rose-300 hover:text-rose-600 transition-colors py-0.5 -ml-1 pr-0.5 shrink-0"
+                      title="按住拖拽以调整高优待办执行排序"
+                    >
+                      <GripVertical className="h-4 w-4" />
+                    </div>
+                  )}
+
                   <button
                     onClick={() => onToggleTask(task.id)}
                     className="mt-0.5 text-slate-400 hover:text-indigo-600 cursor-pointer shrink-0 transition-colors"
@@ -251,17 +479,52 @@ export const HomeTab: React.FC<HomeTabProps> = ({
                         <TagIcon className="h-3 w-3" />
                         <span>{displayLabel}</span>
                       </span>
-                      <span className="text-[10px] font-black px-1.5 py-0.5 rounded-md bg-rose-500/10 text-rose-700 border border-rose-500/20">
-                        🔥 紧急高优
+                      <span className="text-[10px] font-black px-1.5 py-0.5 rounded-md bg-rose-500/10 text-rose-700 border border-rose-500/20 flex items-center gap-0.5">
+                        <span>🔥 紧急高优 · 可拖拽</span>
                       </span>
+                      {task.custom_category_name && (
+                        <span className="text-[10px] font-black px-2 py-0.5 rounded-md bg-purple-500/10 text-purple-700 border border-purple-500/25 flex items-center gap-1 shrink-0">
+                          <span>🏷️</span>
+                          <span>{task.custom_category_name}</span>
+                        </span>
+                      )}
+                      {task.is_recurring && task.recurrence_pattern && task.recurrence_pattern !== 'none' && (
+                        <span className="text-[10px] font-black px-2 py-0.5 rounded-md bg-teal-500/10 text-teal-700 border border-teal-500/25 flex items-center gap-1 shrink-0" title={`周期循环任务：${task.recurrence_pattern === 'daily' ? '每天' : task.recurrence_pattern === 'weekly' ? '每周' : '每月'}`}>
+                          <Repeat className="h-3 w-3 text-teal-600" />
+                          <span>{task.recurrence_pattern === 'daily' ? '每天' : task.recurrence_pattern === 'weekly' ? '每周' : '每月'}</span>
+                          {task.recurrence_streak !== undefined && task.recurrence_streak > 0 && (
+                            <span className="text-[9px] bg-teal-600 text-white px-1 rounded-sm">
+                              连击 {task.recurrence_streak}
+                            </span>
+                          )}
+                        </span>
+                      )}
+                      {task.project_tag && !task.custom_category_name && (
+                        <span className="text-[10px] font-black px-2 py-0.5 rounded-md bg-indigo-500/10 text-indigo-700 border border-indigo-500/25 shrink-0">
+                          📁 {task.project_tag}
+                        </span>
+                      )}
                       {task.course_name && (
                         <span className="text-[10px] font-bold text-indigo-700 bg-indigo-50/80 px-2 py-0.5 rounded-md border border-indigo-100 truncate max-w-32">
                           {task.course_name}
                         </span>
                       )}
+                      {task.subtasks && task.subtasks.length > 0 && (
+                        <span 
+                          className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-purple-500/10 text-purple-700 border border-purple-500/25 flex items-center gap-1 shrink-0"
+                          title={`拆解子任务进度：${task.subtasks.filter(s => s.is_completed).length}/${task.subtasks.length} 已完成`}
+                        >
+                          <ListTodo className="h-3 w-3 text-purple-600" />
+                          <span>{task.subtasks.filter(s => s.is_completed).length}/{task.subtasks.length} 步骤</span>
+                        </span>
+                      )}
                     </div>
 
-                    <div className={`text-xs sm:text-sm font-bold text-slate-800 leading-snug break-words group-hover:text-indigo-600 transition-colors ${task.is_completed ? 'line-through text-slate-400' : ''}`}>
+                    <div 
+                      onClick={() => onSelectTask?.(task)}
+                      className={`text-xs sm:text-sm font-bold text-slate-800 leading-snug break-words group-hover:text-indigo-600 transition-colors cursor-pointer ${task.is_completed ? 'line-through text-slate-400' : ''}`}
+                      title={onSelectTask ? '点击编辑此待办' : undefined}
+                    >
                       {task.title}
                     </div>
 
@@ -271,11 +534,68 @@ export const HomeTab: React.FC<HomeTabProps> = ({
                       </p>
                     )}
 
-                    <div className="flex items-center gap-2 mt-2 text-[11px] font-mono text-slate-500">
-                      <Clock className="h-3.5 w-3.5 text-rose-500 shrink-0" />
-                      <span className="font-bold text-rose-600">
-                        今日 {task.deadline.includes(' ') ? task.deadline.split(' ')[1] : ''} 截止
-                      </span>
+                    <div className="flex items-center justify-between mt-2">
+                      <div className="flex items-center gap-2 text-[11px] font-mono text-slate-500">
+                        <Clock className="h-3.5 w-3.5 text-rose-500 shrink-0" />
+                        <span className="font-bold text-rose-600">
+                          今日 {task.deadline.includes(' ') ? task.deadline.split(' ')[1] : ''} 截止
+                        </span>
+                      </div>
+
+                      {/* Quick up/down reorder buttons & edit button */}
+                      <div className="flex items-center gap-1 opacity-80 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
+                        {!task.is_completed && onStartTaskFocus && (
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); onStartTaskFocus(task); }}
+                            className="px-2 py-0.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-[10px] font-black flex items-center gap-1 transition-colors cursor-pointer border border-indigo-200/60 shadow-2xs"
+                            title="开启此待办专属番茄钟深度专注"
+                          >
+                            <Timer className="h-3 w-3 text-indigo-600" />
+                            <span>专注</span>
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); handleMoveTask(task.id, 'up'); }}
+                          className="p-1 rounded-lg hover:bg-slate-200/70 text-slate-400 hover:text-slate-800 transition-colors cursor-pointer"
+                          title="上移排序"
+                        >
+                          <ChevronUp className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); handleMoveTask(task.id, 'down'); }}
+                          className="p-1 rounded-lg hover:bg-slate-200/70 text-slate-400 hover:text-slate-800 transition-colors cursor-pointer"
+                          title="下移排序"
+                        >
+                          <ChevronDown className="h-3.5 w-3.5" />
+                        </button>
+                        {onSelectTask && (
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); onSelectTask(task); }}
+                            className="p-1 rounded-lg hover:bg-slate-200/70 text-slate-400 hover:text-indigo-600 transition-colors cursor-pointer"
+                            title="编辑待办及具体时间"
+                          >
+                            <Edit3 className="h-3.5 w-3.5" />
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            const res = await copyTaskShareLink(task, user?.username);
+                            if (res.success && showToast) {
+                              showToast(`🔗 已复制《${task.title.slice(0, 14)}...》分享链接！发给同学打开即可一键导入`);
+                            }
+                          }}
+                          className="p-1 rounded-lg hover:bg-slate-200/70 text-slate-400 hover:text-indigo-600 transition-colors cursor-pointer"
+                          title="复制待办分享链接"
+                        >
+                          <Share2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -284,6 +604,14 @@ export const HomeTab: React.FC<HomeTabProps> = ({
           </div>
         )}
       </div>
+
+      {/* 3.5 Task Insights Dashboard (Recharts Weekly Completed vs Pending Trends & Productive Days) */}
+      <TaskInsights
+        tasks={tasks}
+        settings={settings}
+        onNavigateTab={onNavigateTab}
+        onSelectTask={onSelectTask}
+      />
 
       {/* 3. Main 2-Column Grid: Today's Courses & Tasks (Expanded Gaps) */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 lg:gap-10 items-start">
@@ -394,16 +722,35 @@ export const HomeTab: React.FC<HomeTabProps> = ({
 
           {/* Module 2.2: Quick Shortcuts Matrix (Liquid Glass Panel with Distinct Margin) */}
           <div className="glass-panel rounded-3xl p-6 sm:p-7 space-y-4 shadow-sm">
-            <div className="text-xs font-black text-slate-700 uppercase tracking-wider">
-              校园快捷工作流
+            <div className="text-xs font-black text-slate-700 uppercase tracking-wider flex items-center justify-between">
+              <span>校园快捷工作流</span>
+              <span className="text-[10px] text-indigo-600 font-bold bg-indigo-50 px-2 py-0.5 rounded-md border border-indigo-100">
+                AI 效率工具已接入
+              </span>
             </div>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3.5">
+              <button
+                onClick={() => setIsStudyPlanModalOpen(true)}
+                className="flex items-center gap-3 p-3.5 rounded-2xl bg-white/70 hover:bg-white/95 border border-purple-200/80 shadow-2xs hover:shadow-xs transition-all text-left cursor-pointer group active:scale-98 ring-1 ring-purple-500/10"
+              >
+                <div className="h-9 w-9 rounded-xl bg-linear-to-tr from-indigo-500/20 to-purple-500/20 border border-purple-500/30 text-purple-700 flex items-center justify-center shrink-0 shadow-xs">
+                  <Calendar className="h-4.5 w-4.5" />
+                </div>
+                <div>
+                  <div className="text-xs font-black text-purple-950 group-hover:text-purple-700 flex items-center gap-1">
+                    <span>自习规划</span>
+                    <span className="text-[9px] font-black px-1 rounded bg-purple-100 text-purple-700">AI</span>
+                  </div>
+                  <div className="text-[10px] text-slate-500 font-medium mt-0.5">高优日程排期</div>
+                </div>
+              </button>
+
               <button
                 onClick={() => onNavigateTab('ai')}
-                className="flex items-center gap-3.5 p-4 rounded-2xl bg-white/70 hover:bg-white/95 border border-white/90 shadow-2xs hover:shadow-xs transition-all text-left cursor-pointer group active:scale-98"
+                className="flex items-center gap-3 p-3.5 rounded-2xl bg-white/70 hover:bg-white/95 border border-white/90 shadow-2xs hover:shadow-xs transition-all text-left cursor-pointer group active:scale-98"
               >
-                <div className="h-10 w-10 rounded-2xl bg-purple-500/15 border border-purple-500/25 text-purple-700 flex items-center justify-center shrink-0 shadow-xs">
-                  <Sparkles className="h-5 w-5" />
+                <div className="h-9 w-9 rounded-xl bg-purple-500/15 border border-purple-500/25 text-purple-700 flex items-center justify-center shrink-0 shadow-xs">
+                  <Sparkles className="h-4.5 w-4.5" />
                 </div>
                 <div>
                   <div className="text-xs font-black text-slate-900 group-hover:text-purple-700">AI 考点速成</div>
@@ -412,11 +759,27 @@ export const HomeTab: React.FC<HomeTabProps> = ({
               </button>
 
               <button
-                onClick={() => onNavigateTab('notice')}
-                className="flex items-center gap-3.5 p-4 rounded-2xl bg-white/70 hover:bg-white/95 border border-white/90 shadow-2xs hover:shadow-xs transition-all text-left cursor-pointer group active:scale-98"
+                onClick={onOpenGroupMessageTodo}
+                className="flex items-center gap-3 p-3.5 rounded-2xl bg-white/70 hover:bg-white/95 border border-indigo-200/80 shadow-2xs hover:shadow-xs transition-all text-left cursor-pointer group active:scale-98 ring-1 ring-indigo-500/10"
               >
-                <div className="h-10 w-10 rounded-2xl bg-amber-500/15 border border-amber-500/25 text-amber-700 flex items-center justify-center shrink-0 shadow-xs">
-                  <TrendingUp className="h-5 w-5" />
+                <div className="h-9 w-9 rounded-xl bg-indigo-500/15 border border-indigo-500/25 text-indigo-700 flex items-center justify-center shrink-0 shadow-xs">
+                  <MessageSquare className="h-4.5 w-4.5" />
+                </div>
+                <div>
+                  <div className="text-xs font-black text-indigo-950 group-hover:text-indigo-700 flex items-center gap-1">
+                    <span>群消息待办</span>
+                    <span className="text-[9px] font-black px-1 rounded bg-indigo-100 text-indigo-700">AI</span>
+                  </div>
+                  <div className="text-[10px] text-slate-500 font-medium mt-0.5">智能抓取行动项</div>
+                </div>
+              </button>
+
+              <button
+                onClick={() => onNavigateTab('notice')}
+                className="flex items-center gap-3 p-3.5 rounded-2xl bg-white/70 hover:bg-white/95 border border-white/90 shadow-2xs hover:shadow-xs transition-all text-left cursor-pointer group active:scale-98"
+              >
+                <div className="h-9 w-9 rounded-xl bg-amber-500/15 border border-amber-500/25 text-amber-700 flex items-center justify-center shrink-0 shadow-xs">
+                  <TrendingUp className="h-4.5 w-4.5" />
                 </div>
                 <div>
                   <div className="text-xs font-black text-slate-900 group-hover:text-amber-700">奖学金雷达</div>
@@ -426,10 +789,10 @@ export const HomeTab: React.FC<HomeTabProps> = ({
 
               <button
                 onClick={() => onNavigateTab('notice')}
-                className="flex items-center gap-3.5 p-4 rounded-2xl bg-white/70 hover:bg-white/95 border border-white/90 shadow-2xs hover:shadow-xs transition-all text-left cursor-pointer group active:scale-98"
+                className="flex items-center gap-3 p-3.5 rounded-2xl bg-white/70 hover:bg-white/95 border border-white/90 shadow-2xs hover:shadow-xs transition-all text-left cursor-pointer group active:scale-98"
               >
-                <div className="h-10 w-10 rounded-2xl bg-emerald-500/15 border border-emerald-500/25 text-emerald-700 flex items-center justify-center shrink-0 shadow-xs">
-                  <Compass className="h-5 w-5" />
+                <div className="h-9 w-9 rounded-xl bg-emerald-500/15 border border-emerald-500/25 text-emerald-700 flex items-center justify-center shrink-0 shadow-xs">
+                  <Compass className="h-4.5 w-4.5" />
                 </div>
                 <div>
                   <div className="text-xs font-black text-slate-900 group-hover:text-emerald-700">实习直通车</div>
@@ -439,10 +802,10 @@ export const HomeTab: React.FC<HomeTabProps> = ({
 
               <button
                 onClick={() => onNavigateTab('profile')}
-                className="flex items-center gap-3.5 p-4 rounded-2xl bg-white/70 hover:bg-white/95 border border-white/90 shadow-2xs hover:shadow-xs transition-all text-left cursor-pointer group active:scale-98"
+                className="flex items-center gap-3 p-3.5 rounded-2xl bg-white/70 hover:bg-white/95 border border-white/90 shadow-2xs hover:shadow-xs transition-all text-left cursor-pointer group active:scale-98"
               >
-                <div className="h-10 w-10 rounded-2xl bg-blue-500/15 border border-blue-500/25 text-blue-700 flex items-center justify-center shrink-0 shadow-xs">
-                  <CreditCard className="h-5 w-5" />
+                <div className="h-9 w-9 rounded-xl bg-blue-500/15 border border-blue-500/25 text-blue-700 flex items-center justify-center shrink-0 shadow-xs">
+                  <CreditCard className="h-4.5 w-4.5" />
                 </div>
                 <div>
                   <div className="text-xs font-black text-slate-900 group-hover:text-blue-700">校园一卡通</div>
@@ -456,6 +819,18 @@ export const HomeTab: React.FC<HomeTabProps> = ({
         {/* Right 1 Col: Urgent Tasks & Recent Notices (Comfortably Spaced) */}
         <div className="space-y-8 sm:space-y-10">
           
+          {/* Module 2.25: Weekly Goal Widget */}
+          <WeeklyGoalWidget
+            tasks={tasks}
+            currentWeek={settings.current_week}
+            onToggleTask={onToggleTask}
+            onSelectTask={onSelectTask}
+            onOpenAddTask={onOpenAddTask}
+            onSaveTask={onSaveTask}
+            onStartTaskFocus={onStartTaskFocus}
+            showToast={showToast}
+          />
+
           {/* Module 2.3: Tasks Card (Liquid Glass Panel) */}
           <div className="glass-panel rounded-3xl p-6 sm:p-7 space-y-4 shadow-sm">
             <div className="flex items-center justify-between">
@@ -522,6 +897,33 @@ export const HomeTab: React.FC<HomeTabProps> = ({
                   </button>
                 );
               })}
+
+              {/* User Custom Categories / Project Filter Chips */}
+              {customCategories && customCategories.length > 0 && (
+                <>
+                  <div className="h-4 w-px bg-slate-300/60 shrink-0 mx-0.5" />
+                  {customCategories.map(cat => {
+                    const isSelected = selectedTagFilter === `custom:${cat.id}`;
+                    const colorStyle = getCategoryColorClasses(cat.color);
+                    const CatIcon = getTaskTagIcon(cat.iconName || (cat.type === 'course' ? 'BookOpen' : 'Folder'));
+
+                    return (
+                      <button
+                        key={cat.id}
+                        onClick={() => setSelectedTagFilter(isSelected ? 'all' : `custom:${cat.id}`)}
+                        className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-xl font-bold whitespace-nowrap transition-all cursor-pointer border ${
+                          isSelected
+                            ? `${colorStyle.bgClass} ${colorStyle.textClass} ${colorStyle.borderClass} ring-1 ring-indigo-400 shadow-2xs`
+                            : 'bg-white/60 hover:bg-white/90 text-slate-600 border-white/80'
+                        }`}
+                      >
+                        <CatIcon className="h-3 w-3" />
+                        <span>{cat.name}</span>
+                      </button>
+                    );
+                  })}
+                </>
+              )}
             </div>
 
             {/* Quick Add Task Field */}
@@ -535,6 +937,17 @@ export const HomeTab: React.FC<HomeTabProps> = ({
               </button>
             </div>
 
+            {/* Drag Hint Banner for High Priority Tasks */}
+            {tasks.some(t => t.priority === 'high' && !t.is_completed) && (
+              <div className="flex items-center justify-between px-3 py-2 rounded-xl bg-rose-50/70 border border-rose-200/60 text-[11px] text-rose-700">
+                <span className="flex items-center gap-1.5 font-bold">
+                  <GripVertical className="h-3.5 w-3.5 text-rose-500 shrink-0" />
+                  <span>高优待办已激活：按住左侧手柄拖拽可手动调序</span>
+                </span>
+                <span className="text-[10px] text-rose-500/80 hidden sm:inline">上下移动排序</span>
+              </div>
+            )}
+
             {/* Task Item List */}
             <div className="space-y-2.5 max-h-96 overflow-y-auto pr-0.5">
               {filteredTasks.length === 0 ? (
@@ -546,12 +959,59 @@ export const HomeTab: React.FC<HomeTabProps> = ({
                   const autoTag = detectTaskAutoTag(task.title, task.category);
                   const TagIcon = getTaskTagIcon(task.auto_tag_icon || autoTag.iconName);
                   const displayLabel = task.auto_tag_label || autoTag.label;
+                  const isHighPriority = task.priority === 'high';
+                  const isDragging = draggedTaskId === task.id;
+                  const isOver = dragOverTaskId === task.id;
 
                   return (
                     <div
                       key={task.id}
-                      className="flex items-start gap-3 p-3.5 rounded-2xl bg-white/60 hover:bg-white/95 border border-white/80 transition-all group shadow-2xs hover:shadow-xs"
+                      draggable={isHighPriority && !task.is_completed}
+                      onDragStart={(e) => {
+                        if (isHighPriority && !task.is_completed) {
+                          e.dataTransfer.setData('text/plain', task.id);
+                          setDraggedTaskId(task.id);
+                        }
+                      }}
+                      onDragOver={(e) => {
+                        if (draggedTaskId) {
+                          e.preventDefault();
+                          if (draggedTaskId !== task.id) {
+                            setDragOverTaskId(task.id);
+                          }
+                        }
+                      }}
+                      onDragLeave={() => {
+                        if (dragOverTaskId === task.id) setDragOverTaskId(null);
+                      }}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        handleDropTask(task.id);
+                      }}
+                      onDragEnd={() => {
+                        setDraggedTaskId(null);
+                        setDragOverTaskId(null);
+                      }}
+                      className={`flex items-start gap-2.5 p-3.5 rounded-2xl border transition-all group shadow-2xs hover:shadow-xs relative ${
+                        isHighPriority
+                          ? 'border-rose-100 bg-rose-50/20 hover:bg-white/95'
+                          : 'bg-white/60 hover:bg-white/95 border-white/80'
+                      } ${
+                        isDragging ? 'opacity-40 border-dashed border-rose-400 bg-rose-50/40 scale-[0.99]' : ''
+                      } ${
+                        isOver ? 'ring-2 ring-rose-500 bg-rose-50/90 border-rose-400 scale-[1.01]' : ''
+                      }`}
                     >
+                      {/* Drag Grip Handle for High Priority Items */}
+                      {isHighPriority && !task.is_completed && (
+                        <div
+                          className="cursor-grab active:cursor-grabbing text-rose-300 hover:text-rose-600 transition-colors py-0.5 -ml-1 pr-0.5 shrink-0"
+                          title="按住拖拽以调整高优待办执行排序"
+                        >
+                          <GripVertical className="h-4 w-4" />
+                        </div>
+                      )}
+
                       <button
                         onClick={() => onToggleTask(task.id)}
                         className="mt-0.5 text-slate-400 hover:text-indigo-600 cursor-pointer shrink-0 transition-colors"
@@ -573,24 +1033,127 @@ export const HomeTab: React.FC<HomeTabProps> = ({
                             <span>{displayLabel}</span>
                           </span>
 
-                          {task.priority === 'high' && (
-                            <span className="text-[10px] font-black px-1.5 py-0.5 rounded-md bg-rose-500/10 text-rose-700 border border-rose-500/20">
-                              🔥 紧急
+                          {isHighPriority && (
+                            <span className="text-[10px] font-black px-1.5 py-0.5 rounded-md bg-rose-500/10 text-rose-700 border border-rose-500/20 flex items-center gap-0.5">
+                              <span>🔥 紧急 · 可拖拽</span>
+                            </span>
+                          )}
+
+                          {task.custom_category_name && (
+                            <span className="text-[10px] font-black px-2 py-0.5 rounded-md bg-purple-500/10 text-purple-700 border border-purple-500/25 flex items-center gap-1 shrink-0">
+                              <span>🏷️</span>
+                              <span>{task.custom_category_name}</span>
+                            </span>
+                          )}
+
+                          {task.is_recurring && task.recurrence_pattern && task.recurrence_pattern !== 'none' && (
+                            <span className="text-[10px] font-black px-2 py-0.5 rounded-md bg-teal-500/10 text-teal-700 border border-teal-500/25 flex items-center gap-1 shrink-0" title={`周期循环任务：${task.recurrence_pattern === 'daily' ? '每天' : task.recurrence_pattern === 'weekly' ? '每周' : '每月'}`}>
+                              <Repeat className="h-3 w-3 text-teal-600" />
+                              <span>{task.recurrence_pattern === 'daily' ? '每天' : task.recurrence_pattern === 'weekly' ? '每周' : '每月'}</span>
+                              {task.recurrence_streak !== undefined && task.recurrence_streak > 0 && (
+                                <span className="text-[9px] bg-teal-600 text-white px-1 rounded-sm">
+                                  连击 {task.recurrence_streak}
+                                </span>
+                              )}
+                            </span>
+                          )}
+
+                          {task.project_tag && !task.custom_category_name && (
+                            <span className="text-[10px] font-black px-2 py-0.5 rounded-md bg-indigo-500/10 text-indigo-700 border border-indigo-500/25 shrink-0">
+                              📁 {task.project_tag}
+                            </span>
+                          )}
+
+                          {task.subtasks && task.subtasks.length > 0 && (
+                            <span 
+                              className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-purple-500/10 text-purple-700 border border-purple-500/25 flex items-center gap-1 shrink-0"
+                              title={`拆解子任务进度：${task.subtasks.filter(s => s.is_completed).length}/${task.subtasks.length} 已完成`}
+                            >
+                              <ListTodo className="h-3 w-3 text-purple-600" />
+                              <span>{task.subtasks.filter(s => s.is_completed).length}/{task.subtasks.length} 步骤</span>
                             </span>
                           )}
                         </div>
 
-                        <div className={`text-xs font-bold text-slate-800 leading-snug break-words group-hover:text-indigo-600 transition-colors ${task.is_completed ? 'line-through opacity-60' : ''}`}>
+                        <div
+                          onClick={() => onSelectTask?.(task)}
+                          className={`text-xs font-bold text-slate-800 leading-snug break-words group-hover:text-indigo-600 transition-colors cursor-pointer ${task.is_completed ? 'line-through opacity-60' : ''}`}
+                          title={onSelectTask ? '点击编辑此待办' : undefined}
+                        >
                           {task.title}
                         </div>
 
-                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1.5 text-[11px] text-slate-500 font-medium">
-                          {task.course_name && (
-                            <span className="text-indigo-600 font-bold truncate max-w-32 bg-indigo-50 px-2 py-0.5 rounded-md border border-indigo-100">
-                              {task.course_name}
-                            </span>
-                          )}
-                          <span className="font-mono text-slate-400">截止: {task.deadline.split(' ')[0]}</span>
+                        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 mt-1.5 text-[11px] text-slate-500 font-medium">
+                          <div className="flex flex-wrap items-center gap-2">
+                            {task.course_name && (
+                              <span className="text-indigo-600 font-bold truncate max-w-32 bg-indigo-50 px-2 py-0.5 rounded-md border border-indigo-100">
+                                {task.course_name}
+                              </span>
+                            )}
+                            <div className="flex items-center gap-1 font-mono text-slate-500">
+                              <Clock className="h-3 w-3 text-slate-400 shrink-0" />
+                              <span>截止: {task.deadline}</span>
+                            </div>
+                          </div>
+
+                          {/* Quick Actions: Move Up/Down & Edit */}
+                          <div className="flex items-center gap-1 opacity-80 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
+                            {!task.is_completed && onStartTaskFocus && (
+                              <button
+                                type="button"
+                                onClick={(e) => { e.stopPropagation(); onStartTaskFocus(task); }}
+                                className="px-2 py-0.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-[10px] font-black flex items-center gap-1 transition-colors cursor-pointer border border-indigo-200/60 shadow-2xs"
+                                title="开启此待办专属番茄钟深度专注"
+                              >
+                                <Timer className="h-3 w-3 text-indigo-600" />
+                                <span>专注</span>
+                              </button>
+                            )}
+                            {isHighPriority && !task.is_completed && (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={(e) => { e.stopPropagation(); handleMoveTask(task.id, 'up'); }}
+                                  className="p-1 rounded-lg hover:bg-slate-200/70 text-slate-400 hover:text-slate-800 transition-colors cursor-pointer"
+                                  title="上移排序"
+                                >
+                                  <ChevronUp className="h-3.5 w-3.5" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={(e) => { e.stopPropagation(); handleMoveTask(task.id, 'down'); }}
+                                  className="p-1 rounded-lg hover:bg-slate-200/70 text-slate-400 hover:text-slate-800 transition-colors cursor-pointer"
+                                  title="下移排序"
+                                >
+                                  <ChevronDown className="h-3.5 w-3.5" />
+                                </button>
+                              </>
+                            )}
+                            {onSelectTask && (
+                              <button
+                                type="button"
+                                onClick={(e) => { e.stopPropagation(); onSelectTask(task); }}
+                                className="p-1 rounded-lg hover:bg-slate-200/70 text-slate-400 hover:text-indigo-600 transition-colors cursor-pointer"
+                                title="编辑待办及具体时间"
+                              >
+                                <Edit3 className="h-3.5 w-3.5" />
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={async (e) => {
+                                e.stopPropagation();
+                                const res = await copyTaskShareLink(task, user?.username);
+                                if (res.success && showToast) {
+                                  showToast(`🔗 已复制《${task.title.slice(0, 14)}...》分享链接！发给同学打开即可一键导入`);
+                                }
+                              }}
+                              className="p-1 rounded-lg hover:bg-slate-200/70 text-slate-400 hover:text-indigo-600 transition-colors cursor-pointer"
+                              title="复制待办分享链接"
+                            >
+                              <Share2 className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -643,6 +1206,19 @@ export const HomeTab: React.FC<HomeTabProps> = ({
         </div>
 
       </div>
+
+      {/* Smart Study Plan Modal (Gemini Powered) */}
+      <SmartStudyPlanModal
+        isOpen={isStudyPlanModalOpen}
+        onClose={() => setIsStudyPlanModalOpen(false)}
+        tasks={tasks}
+        courses={courses}
+        user={user}
+        settings={settings}
+        onNavigateTab={onNavigateTab}
+        onAddTask={onSaveTask}
+        showToast={showToast}
+      />
 
     </div>
   );

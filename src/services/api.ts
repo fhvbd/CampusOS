@@ -1,5 +1,15 @@
-import { Course, Notice, Task, UserProfile, AppSettings, ChatMessage } from '../types';
-import { INITIAL_USER, INITIAL_COURSES, INITIAL_NOTICES, INITIAL_TASKS, INITIAL_SETTINGS } from '../mockData';
+import { 
+  Course, 
+  Notice, 
+  Task, 
+  UserProfile, 
+  AppSettings, 
+  ChatMessage, 
+  CustomTaskCategory,
+  LeaderboardStudent,
+  FocusLeaderboardData
+} from '../types';
+import { INITIAL_USER, INITIAL_COURSES, INITIAL_NOTICES, INITIAL_TASKS, INITIAL_SETTINGS, INITIAL_CUSTOM_CATEGORIES } from '../mockData';
 
 const STORAGE_KEYS = {
   USER: 'campus_os_user_v1',
@@ -8,6 +18,8 @@ const STORAGE_KEYS = {
   TASKS: 'campus_os_tasks_v1',
   SETTINGS: 'campus_os_settings_v1',
   CHAT: 'campus_os_chat_v1',
+  CUSTOM_CATEGORIES: 'campus_os_custom_categories_v1',
+  LEADERBOARD: 'campus_os_focus_leaderboard_v1',
 };
 
 // Safe LocalStorage helpers
@@ -188,6 +200,37 @@ export const CampusAPI = {
     return updated;
   },
 
+  reorderTasks: async (tasks: Task[]): Promise<Task[]> => {
+    saveStorage(STORAGE_KEYS.TASKS, tasks);
+    return tasks;
+  },
+
+  // Custom Task Categories
+  getCustomTaskCategories: async (): Promise<CustomTaskCategory[]> => {
+    return loadStorage<CustomTaskCategory[]>(STORAGE_KEYS.CUSTOM_CATEGORIES, INITIAL_CUSTOM_CATEGORIES);
+  },
+
+  saveCustomTaskCategory: async (category: CustomTaskCategory): Promise<CustomTaskCategory[]> => {
+    const current = loadStorage<CustomTaskCategory[]>(STORAGE_KEYS.CUSTOM_CATEGORIES, INITIAL_CUSTOM_CATEGORIES);
+    const index = current.findIndex(c => c.id === category.id);
+    let updated: CustomTaskCategory[];
+    if (index >= 0) {
+      updated = [...current];
+      updated[index] = category;
+    } else {
+      updated = [category, ...current];
+    }
+    saveStorage(STORAGE_KEYS.CUSTOM_CATEGORIES, updated);
+    return updated;
+  },
+
+  deleteCustomTaskCategory: async (id: string): Promise<CustomTaskCategory[]> => {
+    const current = loadStorage<CustomTaskCategory[]>(STORAGE_KEYS.CUSTOM_CATEGORIES, INITIAL_CUSTOM_CATEGORIES);
+    const updated = current.filter(c => c.id !== id);
+    saveStorage(STORAGE_KEYS.CUSTOM_CATEGORIES, updated);
+    return updated;
+  },
+
   // Settings
   getSettings: async (): Promise<AppSettings> => {
     return loadStorage<AppSettings>(STORAGE_KEYS.SETTINGS, INITIAL_SETTINGS);
@@ -212,6 +255,7 @@ export const CampusAPI = {
     saveStorage(STORAGE_KEYS.NOTICES, INITIAL_NOTICES);
     saveStorage(STORAGE_KEYS.TASKS, INITIAL_TASKS);
     saveStorage(STORAGE_KEYS.SETTINGS, INITIAL_SETTINGS);
+    saveStorage(STORAGE_KEYS.CUSTOM_CATEGORIES, INITIAL_CUSTOM_CATEGORIES);
   },
 
   // Import and Merge JSON Data
@@ -369,7 +413,231 @@ export const CampusAPI = {
     // Built-in intelligent campus engine response fallback
     return generateFallbackAIResponse(message, context);
   },
+
+  // 12. Global Focus Leaderboard (Campus-wide peer ranking)
+  getFocusLeaderboard: async (userFocusMinutes?: number): Promise<FocusLeaderboardData> => {
+    try {
+      const res = await fetch('/api/focus/leaderboard');
+      if (res.ok) {
+        const data = await res.json();
+        saveStorage(STORAGE_KEYS.LEADERBOARD, data);
+        return data;
+      }
+    } catch (e) {}
+
+    // Fallback & dynamic realistic ranking computation
+    return buildRealisticFocusLeaderboard(userFocusMinutes);
+  },
+
+  cheerStudent: async (studentId: string): Promise<{ success: boolean; cheerCount: number }> => {
+    try {
+      const res = await fetch(`/api/focus/cheer/${studentId}`, { method: 'POST' });
+      if (res.ok) {
+        const data = await res.json();
+        return data;
+      }
+    } catch (e) {}
+    return { success: true, cheerCount: 1 };
+  },
 };
+
+// Realistic mock peer students using CampusOS across university departments
+const INITIAL_PEER_STUDENTS: Omit<LeaderboardStudent, 'rank'>[] = [
+  {
+    id: 'peer_1',
+    name: '陈思源',
+    avatar: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=120&auto=format&fit=crop&q=80',
+    college: '计算机学院',
+    major: '计算机科学与技术',
+    grade: '大三',
+    dailyFocusMinutes: 215,
+    weeklyFocusMinutes: 1240,
+    sessionsCount: 7,
+    efficiencyScore: 98,
+    streakDays: 14,
+    status: 'focusing',
+    cheerCount: 42,
+  },
+  {
+    id: 'peer_2',
+    name: '张沐辰',
+    avatar: 'https://images.unsplash.com/photo-1570295999919-56ceb5ecca61?w=120&auto=format&fit=crop&q=80',
+    college: '人工智能学院',
+    major: '人工智能试验班',
+    grade: '大二',
+    dailyFocusMinutes: 180,
+    weeklyFocusMinutes: 1050,
+    sessionsCount: 5,
+    efficiencyScore: 96,
+    streakDays: 9,
+    status: 'focusing',
+    cheerCount: 35,
+  },
+  {
+    id: 'peer_3',
+    name: '陆心怡',
+    avatar: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=120&auto=format&fit=crop&q=80',
+    college: '软件学院',
+    major: '软件工程',
+    grade: '大一',
+    dailyFocusMinutes: 155,
+    weeklyFocusMinutes: 890,
+    sessionsCount: 4,
+    efficiencyScore: 95,
+    streakDays: 11,
+    status: 'completed',
+    cheerCount: 28,
+  },
+  {
+    id: 'peer_4',
+    name: '王启程',
+    avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=120&auto=format&fit=crop&q=80',
+    college: '控制科学与工程学院',
+    major: '自动化',
+    grade: '大二',
+    dailyFocusMinutes: 115,
+    weeklyFocusMinutes: 720,
+    sessionsCount: 3,
+    efficiencyScore: 92,
+    streakDays: 6,
+    status: 'resting',
+    cheerCount: 19,
+  },
+  {
+    id: 'peer_5',
+    name: '许静安',
+    avatar: 'https://images.unsplash.com/photo-1438761681033-6461ffad8d80?w=120&auto=format&fit=crop&q=80',
+    college: '数学科学学院',
+    major: '数学与应用数学',
+    grade: '大一',
+    dailyFocusMinutes: 95,
+    weeklyFocusMinutes: 610,
+    sessionsCount: 3,
+    efficiencyScore: 94,
+    streakDays: 8,
+    status: 'focusing',
+    cheerCount: 15,
+  },
+  {
+    id: 'peer_6',
+    name: '赵天泽',
+    avatar: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=120&auto=format&fit=crop&q=80',
+    college: '网络空间安全学院',
+    major: '信息安全',
+    grade: '大三',
+    dailyFocusMinutes: 80,
+    weeklyFocusMinutes: 520,
+    sessionsCount: 2,
+    efficiencyScore: 90,
+    streakDays: 5,
+    status: 'completed',
+    cheerCount: 12,
+  },
+  {
+    id: 'peer_7',
+    name: '周若涵',
+    avatar: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=120&auto=format&fit=crop&q=80',
+    college: '信息与通信工程学院',
+    major: '电子信息工程',
+    grade: '大一',
+    dailyFocusMinutes: 65,
+    weeklyFocusMinutes: 430,
+    sessionsCount: 2,
+    efficiencyScore: 88,
+    streakDays: 4,
+    status: 'resting',
+    cheerCount: 8,
+  },
+  {
+    id: 'peer_8',
+    name: '黄子轩',
+    avatar: 'https://images.unsplash.com/photo-1522075469751-3a6694fb2f61?w=120&auto=format&fit=crop&q=80',
+    college: '计算机学院',
+    major: '计算机科学与技术',
+    grade: '大二',
+    dailyFocusMinutes: 50,
+    weeklyFocusMinutes: 360,
+    sessionsCount: 2,
+    efficiencyScore: 89,
+    streakDays: 3,
+    status: 'completed',
+    cheerCount: 6,
+  },
+  {
+    id: 'peer_9',
+    name: '孙雨桐',
+    avatar: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=120&auto=format&fit=crop&q=80',
+    college: '数据科学学院',
+    major: '数据科学与大数据技术',
+    grade: '大一',
+    dailyFocusMinutes: 35,
+    weeklyFocusMinutes: 240,
+    sessionsCount: 1,
+    efficiencyScore: 86,
+    streakDays: 2,
+    status: 'resting',
+    cheerCount: 4,
+  },
+];
+
+function buildRealisticFocusLeaderboard(userFocusMinutes?: number): FocusLeaderboardData {
+  const currentUser = loadStorage<UserProfile>(STORAGE_KEYS.USER, INITIAL_USER);
+
+  // Determine current user focus minutes
+  let actualUserMinutes = typeof userFocusMinutes === 'number' ? userFocusMinutes : 75;
+  try {
+    const raw = localStorage.getItem('campus_os_pomodoro_stats_v2');
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (typeof parsed.totalFocusMinutes === 'number' && parsed.totalFocusMinutes > 0) {
+        actualUserMinutes = parsed.totalFocusMinutes;
+      }
+    }
+  } catch (e) {}
+
+  const currentStudentUser: Omit<LeaderboardStudent, 'rank'> = {
+    id: 'user_current',
+    name: `${currentUser.username} (我)`,
+    avatar: currentUser.avatar,
+    college: currentUser.college || '计算机学院',
+    major: currentUser.major || '计算机科学与技术',
+    grade: currentUser.grade || '大一',
+    dailyFocusMinutes: actualUserMinutes,
+    weeklyFocusMinutes: actualUserMinutes * 4 + 180,
+    sessionsCount: Math.max(1, Math.ceil(actualUserMinutes / 25)),
+    efficiencyScore: 94,
+    streakDays: 7,
+    status: 'focusing',
+    cheerCount: 21,
+    isCurrentUser: true,
+  };
+
+  // Combine peers and user, sort descending by daily focus minutes
+  const all = [...INITIAL_PEER_STUDENTS, currentStudentUser].sort((a, b) => b.dailyFocusMinutes - a.dailyFocusMinutes);
+
+  // Assign ranks
+  const rankedStudents: LeaderboardStudent[] = all.map((s, idx) => ({
+    ...s,
+    rank: idx + 1,
+  }));
+
+  const userIndex = rankedStudents.findIndex(s => s.isCurrentUser);
+  const userRankNum = userIndex >= 0 ? userIndex + 1 : rankedStudents.length;
+  const prevStudent = userIndex > 0 ? rankedStudents[userIndex - 1] : null;
+  const minutesToNext = prevStudent ? Math.max(1, prevStudent.dailyFocusMinutes - actualUserMinutes + 1) : 0;
+  const percentile = Math.min(99, Math.round(((rankedStudents.length - userRankNum + 1) / rankedStudents.length) * 100));
+
+  return {
+    updatedAt: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }),
+    students: rankedStudents,
+    userRank: {
+      rank: userRankNum,
+      totalParticipants: rankedStudents.length + 382, // Total students in campus focus pool
+      percentile,
+      minutesToNextRank: minutesToNext,
+    },
+  };
+}
 
 function generateFallbackAIResponse(message: string, context?: any): { reply: string; suggested_actions?: string[] } {
   const lower = message.toLowerCase();

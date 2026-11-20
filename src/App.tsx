@@ -5,7 +5,8 @@ import {
   Notice, 
   Task, 
   UserProfile, 
-  AppSettings 
+  AppSettings,
+  CustomTaskCategory 
 } from './types';
 import { CampusAPI } from './services/api';
 import { Header } from './components/Header';
@@ -21,9 +22,31 @@ import { TaskModal } from './components/TaskModal';
 import { SearchModal } from './components/SearchModal';
 import { CommandPalette } from './components/CommandPalette';
 import { PwaModal } from './components/PwaModal';
+import { GroupMessageTodoModal } from './components/GroupMessageTodoModal';
+import { FocusModeView } from './components/FocusModeView';
+import { SharedTaskPromptModal } from './components/SharedTaskPromptModal';
+import { decodeSharedTask, SharedTaskPayload } from './lib/taskShare';
 import { CheckCircle2 } from 'lucide-react';
-import { INITIAL_USER, INITIAL_COURSES, INITIAL_NOTICES, INITIAL_TASKS, INITIAL_SETTINGS } from './mockData';
+import { INITIAL_USER, INITIAL_COURSES, INITIAL_NOTICES, INITIAL_TASKS, INITIAL_SETTINGS, INITIAL_CUSTOM_CATEGORIES } from './mockData';
 import { detectTaskAutoTag } from './lib/taskTags';
+import {
+  getAccentTheme,
+  applyAccentThemeCssVars,
+  getGlassPreset,
+  applyGlassPresetCssVars,
+} from './lib/accentTheme';
+import { awardTaskXp, revokeTaskXp } from './lib/levelSystem';
+import { generateNextRecurringTask } from './lib/recurringTasks';
+import { NotificationManager } from './lib/notifications';
+import { MilestoneUnlockToast } from './components/MilestoneUnlockToast';
+import { PomodoroHistoryService } from './services/pomodoroHistory';
+import {
+  evaluateFocusMilestones,
+  emitMilestoneUnlockToast,
+  getSimulatedUnlockedIds,
+  saveEquippedBadgeId,
+  checkAndEmitNewlyUnlockedMilestones,
+} from './lib/focusMilestones';
 
 export function App() {
   const [currentTab, setCurrentTab] = useState<TabType>('home');
@@ -32,6 +55,7 @@ export function App() {
   const [notices, setNotices] = useState<Notice[]>(INITIAL_NOTICES);
   const [tasks, setTasks] = useState<Task[]>(INITIAL_TASKS);
   const [settings, setSettings] = useState<AppSettings>(INITIAL_SETTINGS);
+  const [customCategories, setCustomCategories] = useState<CustomTaskCategory[]>(INITIAL_CUSTOM_CATEGORIES);
 
   // Modals state
   const [selectedCourse, setSelectedCourse] = useState<Course | null>(null);
@@ -43,10 +67,40 @@ export function App() {
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [isTaskModalOpen, setIsTaskModalOpen] = useState(false);
 
+  const [isGroupMessageModalOpen, setIsGroupMessageModalOpen] = useState(false);
   const [isSearchModalOpen, setIsSearchModalOpen] = useState(false);
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
   const [isPwaModalOpen, setIsPwaModalOpen] = useState(false);
+  const [isFocusMode, setIsFocusMode] = useState(false);
+  const [focusingTaskId, setFocusingTaskId] = useState<string | null>(null);
   const [deferredPrompt, setDeferredPrompt] = useState<any | null>(null);
+
+  // Active Tag Filter synced with HomeTab and TaskModal
+  const [homeTagFilter, setHomeTagFilter] = useState<string>('all');
+
+  // Shared task prompt state for received share links (?share_task=...)
+  const [sharedTaskToPrompt, setSharedTaskToPrompt] = useState<SharedTaskPayload | null>(null);
+
+  // Check for shared task in URL parameters on mount or hash change
+  useEffect(() => {
+    try {
+      const urlParams = new URLSearchParams(window.location.search);
+      let shareParam = urlParams.get('share_task');
+      if (!shareParam && window.location.hash.includes('share_task=')) {
+        const hashMatch = window.location.hash.match(/share_task=([^&]+)/);
+        if (hashMatch) shareParam = hashMatch[1];
+      }
+
+      if (shareParam) {
+        const decoded = decodeSharedTask(shareParam);
+        if (decoded) {
+          setSharedTaskToPrompt(decoded);
+        }
+      }
+    } catch (e) {
+      console.warn('Failed to parse share_task URL parameter', e);
+    }
+  }, []);
 
   // Toast Notification state
   const [toastMessage, setToastMessage] = useState<{ text: string; type?: 'success' | 'info' } | null>(null);
@@ -69,18 +123,22 @@ export function App() {
   // Initial Load from API / Storage
   useEffect(() => {
     async function loadData() {
-      const [userData, coursesData, noticesData, tasksData, settingsData] = await Promise.all([
+      const [userData, coursesData, noticesData, tasksData, settingsData, categoriesData] = await Promise.all([
         CampusAPI.getUserProfile(),
         CampusAPI.getCourses(),
         CampusAPI.getNotices(),
         CampusAPI.getTasks(),
         CampusAPI.getSettings(),
+        CampusAPI.getCustomTaskCategories(),
       ]);
       setUser(userData);
       setCourses(coursesData);
       setNotices(noticesData);
       setTasks(tasksData);
       setSettings(settingsData);
+      if (categoriesData && categoriesData.length > 0) {
+        setCustomCategories(categoriesData);
+      }
     }
     loadData();
   }, []);
@@ -99,6 +157,31 @@ export function App() {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
+
+  // 2-Hour Due Task Desktop Notification Auto-Check Engine (Browser Notification API)
+  useEffect(() => {
+    if (settings.notification_alert === false) return;
+
+    const runCheck = () => {
+      const { notifiedCount } = NotificationManager.checkAndNotifyDueTasks(
+        tasks,
+        (task) => {
+          setSelectedTask(task);
+          setIsTaskModalOpen(true);
+        }
+      );
+      if (notifiedCount > 0) {
+        showToast(`⏰ 已向系统桌面推送 ${notifiedCount} 项即将在 2 小时内截止的待办提醒！`, 'info');
+      }
+    };
+
+    // Immediate check
+    runCheck();
+
+    // Check periodically every 60 seconds
+    const interval = setInterval(runCheck, 60000);
+    return () => clearInterval(interval);
+  }, [tasks, settings.notification_alert]);
 
   // Handlers
   const handleRefreshSync = async () => {
@@ -172,11 +255,60 @@ export function App() {
   };
 
   const handleToggleTask = async (taskId: string) => {
+    const previousTask = tasks.find(item => item.id === taskId);
     const updated = await CampusAPI.toggleTaskCompleted(taskId);
     setTasks(updated);
     const t = updated.find(item => item.id === taskId);
+
     if (t?.is_completed) {
-      showToast('🎉 恭喜完成一项待办任务！');
+      const currentXp = user.xp ?? 220;
+      const result = awardTaskXp(currentXp, t);
+      const updatedUser = await CampusAPI.updateUserProfile({
+        xp: result.newXp,
+        level: result.newLevel,
+      });
+      setUser(updatedUser);
+
+      if (result.leveledUp) {
+        showToast(`🌟 恭喜晋级 Lv.${result.newLevel} 【${result.levelInfo.title}】！获得 +${result.gainedXp} XP 待办成长奖励！`);
+      } else {
+        showToast(`🎉 完成待办！获得 +${result.gainedXp} XP (当前 Lv.${result.newLevel} ${result.levelInfo.progressPercent}%)`);
+      }
+
+      // Check and trigger Milestone Unlock Celebration Toast on task completion
+      const historyRecords = PomodoroHistoryService.getHistory();
+      const simIds = getSimulatedUnlockedIds();
+      const newlyUnlocked = checkAndEmitNewlyUnlockedMilestones(historyRecords, simIds);
+      if (newlyUnlocked.length === 0 && (result.leveledUp || t.priority === 'high')) {
+        const milestoneSummary = evaluateFocusMilestones(historyRecords, simIds);
+        const targetBadge =
+          milestoneSummary.badges.find(b => b.id === 'deep_work_master' && b.isUnlocked) ||
+          milestoneSummary.badges.find(b => b.isUnlocked);
+        if (targetBadge) {
+          emitMilestoneUnlockToast(targetBadge);
+        }
+      }
+
+      // If task is a recurring task, automatically generate next cycle's occurrence
+      if (t.is_recurring && t.recurrence_pattern && t.recurrence_pattern !== 'none') {
+        const nextRecurringTask = generateNextRecurringTask(t);
+        if (nextRecurringTask) {
+          const withNext = await CampusAPI.saveTask(nextRecurringTask);
+          setTasks(withNext);
+          const freqLabel = t.recurrence_pattern === 'daily' ? '每天' : t.recurrence_pattern === 'weekly' ? '每周' : '每月';
+          setTimeout(() => {
+            showToast(`🔄 ${freqLabel}循环任务打卡成功（已坚持 ${nextRecurringTask.recurrence_streak} 期）！已自动生成下期（${nextRecurringTask.deadline.split(' ')[0]} 截止）`);
+          }, 1200);
+        }
+      }
+    } else if (previousTask?.is_completed && !t?.is_completed) {
+      const currentXp = user.xp ?? 220;
+      const result = revokeTaskXp(currentXp, previousTask);
+      const updatedUser = await CampusAPI.updateUserProfile({
+        xp: result.newXp,
+        level: result.levelInfo.level,
+      });
+      setUser(updatedUser);
     }
   };
 
@@ -184,6 +316,55 @@ export function App() {
     const updated = await CampusAPI.saveTask(task);
     setTasks(updated);
     showToast('待办任务已保存');
+  };
+
+  const handleConfirmImportSharedTask = (shared: SharedTaskPayload) => {
+    const newTask: Task = {
+      id: `task_shared_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      title: shared.title,
+      description: shared.description || '',
+      category: shared.category || 'homework',
+      priority: shared.priority || 'medium',
+      deadline: shared.deadline || `${new Date().toISOString().slice(0, 10)} 23:59`,
+      is_completed: false,
+      course_id: shared.course_id || '',
+      course_name: shared.course_name || '',
+      created_at: new Date().toISOString().slice(0, 10),
+      estimated_hours: shared.estimated_hours,
+      notes: shared.notes || '',
+      auto_tag_label: shared.auto_tag_label,
+      auto_tag_icon: shared.auto_tag_icon,
+      tags: shared.tags || [],
+      subtasks: shared.subtasks,
+    };
+
+    handleSaveTask(newTask);
+    setSharedTaskToPrompt(null);
+    showToast(`✅ 已成功将同学分享的待办《${shared.title.slice(0, 14)}...》添加至您的学业日程！`);
+
+    // Clean up URL query parameter without page reload
+    try {
+      const cleanUrl = window.location.origin + window.location.pathname;
+      window.history.replaceState({}, document.title, cleanUrl);
+    } catch (e) {
+      // ignore
+    }
+  };
+
+  const handleDismissSharedTask = () => {
+    setSharedTaskToPrompt(null);
+    try {
+      const cleanUrl = window.location.origin + window.location.pathname;
+      window.history.replaceState({}, document.title, cleanUrl);
+    } catch (e) {
+      // ignore
+    }
+  };
+
+  const handleReorderTasks = async (reorderedTasks: Task[]) => {
+    setTasks(reorderedTasks);
+    await CampusAPI.reorderTasks(reorderedTasks);
+    showToast('📌 高优待办排序已保存');
   };
 
   const handleAddTaskFromAI = async (title: string, deadline?: string) => {
@@ -218,6 +399,18 @@ export function App() {
     showToast('系统设置已更新');
   };
 
+  const handleSaveCustomCategory = async (category: CustomTaskCategory) => {
+    const updated = await CampusAPI.saveCustomTaskCategory(category);
+    setCustomCategories(updated);
+    showToast(`分类「${category.name}」已保存`);
+  };
+
+  const handleDeleteCustomCategory = async (categoryId: string) => {
+    const updated = await CampusAPI.deleteCustomTaskCategory(categoryId);
+    setCustomCategories(updated);
+    showToast('分类已删除');
+  };
+
   const handleResetData = () => {
     CampusAPI.resetAllData();
     setUser(INITIAL_USER);
@@ -225,6 +418,7 @@ export function App() {
     setNotices(INITIAL_NOTICES);
     setTasks(INITIAL_TASKS);
     setSettings(INITIAL_SETTINGS);
+    setCustomCategories(INITIAL_CUSTOM_CATEGORIES);
     showToast('已恢复为官方初始演示数据集');
   };
 
@@ -266,22 +460,61 @@ export function App() {
     showToast(`已成功导出 ${courses.length} 门课程、${tasks.length} 项待办至 ${fileName}`);
   };
 
+  const currentAccent = getAccentTheme(settings.accent_color);
+  const currentGlassPreset = getGlassPreset(settings.glass_preset);
+
+  // Apply accent theme & Liquid Glass 2.0 optical preset CSS custom variables globally
+  useEffect(() => {
+    applyAccentThemeCssVars(currentAccent);
+  }, [settings.accent_color]);
+
+  useEffect(() => {
+    applyGlassPresetCssVars(currentGlassPreset);
+  }, [settings.glass_preset]);
+
+  // Liquid Glass 2.0 Mouse-Follow Specular Spotlight tracker for .glass-panel-interactive
+  useEffect(() => {
+    const handlePointerMove = (e: PointerEvent) => {
+      const target = (e.target as HTMLElement | null)?.closest?.(
+        '.glass-panel-interactive'
+      ) as HTMLElement | null;
+      if (!target) return;
+      const rect = target.getBoundingClientRect();
+      const x = Math.round(e.clientX - rect.left);
+      const y = Math.round(e.clientY - rect.top);
+      target.style.setProperty('--mouse-x', `${x}px`);
+      target.style.setProperty('--mouse-y', `${y}px`);
+    };
+
+    window.addEventListener('pointermove', handlePointerMove, { passive: true });
+    return () => window.removeEventListener('pointermove', handlePointerMove);
+  }, []);
+
   const unreadNoticeCount = notices.filter(n => !n.is_read).length;
   const pendingTaskCount = tasks.filter(t => !t.is_completed).length;
 
+  const handleStartTaskFocus = (task: Task) => {
+    setFocusingTaskId(task.id);
+    setIsFocusMode(true);
+    showToast(`⏱️ 已为待办《${task.title.slice(0, 16)}...》开启专属番茄钟深度专注！`);
+  };
+
   return (
-    <div className="relative min-h-screen bg-slate-100/80 text-slate-900 flex flex-col selection:bg-blue-500/20 selection:text-blue-900 font-sans overflow-x-hidden">
+    <div 
+      className="relative min-h-screen bg-slate-100/80 text-slate-900 flex flex-col font-sans overflow-x-hidden"
+      data-accent-theme={currentAccent.id}
+    >
       
-      {/* Background Liquid Ambient Mesh Glow Orbs */}
+      {/* Background Liquid Ambient Mesh Glow Orbs (Dynamic Theme Responsive) */}
       <div className="fixed inset-0 pointer-events-none overflow-hidden z-0">
-        {/* Orb 1: Indigo-Blue Top Left */}
-        <div className="absolute -top-32 -left-32 w-96 h-96 rounded-full bg-linear-to-br from-blue-400/30 via-indigo-400/25 to-transparent blur-3xl animate-orb-1" />
-        {/* Orb 2: Violet-Purple Center Right */}
-        <div className="absolute top-1/4 -right-24 w-[32rem] h-[32rem] rounded-full bg-linear-to-bl from-purple-400/25 via-indigo-300/20 to-transparent blur-3xl animate-orb-2" />
-        {/* Orb 3: Cyan-Teal Bottom Left */}
-        <div className="absolute bottom-12 -left-20 w-[28rem] h-[28rem] rounded-full bg-linear-to-tr from-cyan-400/20 via-sky-300/20 to-transparent blur-3xl animate-orb-3" />
-        {/* Orb 4: Rose-Pink Bottom Center */}
-        <div className="absolute -bottom-20 right-1/3 w-80 h-80 rounded-full bg-linear-to-t from-rose-300/15 via-purple-300/15 to-transparent blur-3xl" />
+        {/* Orb 1: Top Left */}
+        <div className={`absolute -top-32 -left-32 w-96 h-96 rounded-full bg-linear-to-br ${currentAccent.orbs.orb1} blur-3xl animate-orb-1 transition-all duration-700`} />
+        {/* Orb 2: Center Right */}
+        <div className={`absolute top-1/4 -right-24 w-[32rem] h-[32rem] rounded-full bg-linear-to-bl ${currentAccent.orbs.orb2} blur-3xl animate-orb-2 transition-all duration-700`} />
+        {/* Orb 3: Bottom Left */}
+        <div className={`absolute bottom-12 -left-20 w-[28rem] h-[28rem] rounded-full bg-linear-to-tr ${currentAccent.orbs.orb3} blur-3xl animate-orb-3 transition-all duration-700`} />
+        {/* Orb 4: Bottom Center */}
+        <div className={`absolute -bottom-20 right-1/3 w-80 h-80 rounded-full bg-linear-to-t ${currentAccent.orbs.orb4} blur-3xl transition-all duration-700`} />
       </div>
 
       {/* Top Header */}
@@ -296,19 +529,59 @@ export function App() {
         onOpenPwaModal={() => setIsPwaModalOpen(true)}
         onOpenProfile={() => setCurrentTab('profile')}
         onOpenNotice={() => setCurrentTab('notice')}
+        isFocusMode={isFocusMode}
+        onToggleFocusMode={() => {
+          setIsFocusMode(prev => {
+            const next = !prev;
+            if (next) {
+              showToast('🧘 已进入沉浸专注模式：导航已收起，仅显示待办与番茄钟');
+            } else {
+              showToast('已退出专注模式，已恢复全局多维视图');
+            }
+            return next;
+          });
+        }}
       />
 
-      {/* Main Navigation (Desktop Top Bar & Mobile Bottom) */}
-      <Navigation
-        currentTab={currentTab}
-        onSelectTab={setCurrentTab}
-        unreadNoticeCount={unreadNoticeCount}
-        pendingTaskCount={pendingTaskCount}
-      />
+      {/* Main Navigation (Desktop Top Bar & Mobile Bottom) - Collapsed when Focus Mode is Active */}
+      {!isFocusMode && (
+        <Navigation
+          currentTab={currentTab}
+          onSelectTab={setCurrentTab}
+          unreadNoticeCount={unreadNoticeCount}
+          pendingTaskCount={pendingTaskCount}
+          settings={settings}
+          tasks={tasks}
+        />
+      )}
 
       {/* Main Content Area - Generous Breathing Room */}
       <main className="relative z-10 flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 sm:py-10">
-        {currentTab === 'home' && (
+        {isFocusMode ? (
+          <FocusModeView
+            tasks={tasks}
+            courses={courses}
+            settings={settings}
+            initialTaskId={focusingTaskId}
+            onToggleTask={handleToggleTask}
+            onSaveTask={handleSaveTask}
+            onExitFocusMode={() => {
+              setIsFocusMode(false);
+              setFocusingTaskId(null);
+              showToast('已退出专注模式，已恢复全局视图');
+            }}
+            onAskAI={() => {
+              setIsFocusMode(false);
+              setCurrentTab('ai');
+            }}
+            onNavigateTab={tab => {
+              setIsFocusMode(false);
+              setCurrentTab(tab);
+            }}
+          />
+        ) : (
+          <>
+            {currentTab === 'home' && (
           <HomeTab
             user={user}
             settings={settings}
@@ -336,6 +609,16 @@ export function App() {
             onAskAI={prompt => {
               setCurrentTab('ai');
             }}
+            onOpenGroupMessageTodo={() => setIsGroupMessageModalOpen(true)}
+            customCategories={customCategories}
+            onReorderTasks={handleReorderTasks}
+            onSelectTask={t => {
+              setSelectedTask(t);
+              setIsTaskModalOpen(true);
+            }}
+            onSaveTask={handleSaveTask}
+            onStartTaskFocus={handleStartTaskFocus}
+            showToast={showToast}
           />
         )}
 
@@ -343,9 +626,14 @@ export function App() {
           <ScheduleTab
             courses={courses}
             settings={settings}
+            tasks={tasks}
             onSelectCourse={c => {
               setSelectedCourse(c);
               setIsCourseModalOpen(true);
+            }}
+            onSelectTask={t => {
+              setSelectedTask(t);
+              setIsTaskModalOpen(true);
             }}
             onOpenAddCourse={() => {
               setSelectedCourse(null);
@@ -354,6 +642,7 @@ export function App() {
             onAskAIForStudyPlan={() => {
               setCurrentTab('ai');
             }}
+            onSaveTask={handleSaveTask}
           />
         )}
 
@@ -373,6 +662,7 @@ export function App() {
         {currentTab === 'ai' && (
           <AIAssistantTab
             courses={courses}
+            tasks={tasks}
             onAddTaskFromAI={handleAddTaskFromAI}
           />
         )}
@@ -389,7 +679,10 @@ export function App() {
             onResetData={handleResetData}
             onImportData={handleImportData}
             onOpenPwaModal={() => setIsPwaModalOpen(true)}
+            onNavigateTab={setCurrentTab}
           />
+        )}
+          </>
         )}
       </main>
 
@@ -414,9 +707,21 @@ export function App() {
       <TaskModal
         task={selectedTask}
         courses={courses}
+        tasks={tasks}
         isOpen={isTaskModalOpen}
         onClose={() => setIsTaskModalOpen(false)}
         onSave={handleSaveTask}
+        customCategories={customCategories}
+        onSaveCustomCategory={handleSaveCustomCategory}
+        onDeleteCustomCategory={handleDeleteCustomCategory}
+        onSelectTask={t => setSelectedTask(t)}
+        onFilterByTag={tagId => {
+          setHomeTagFilter(tagId);
+          setCurrentTab('home');
+          setIsTaskModalOpen(false);
+          showToast('🏷️ 已切换至主界面并按选定标签筛选待办');
+        }}
+        onStartTaskFocus={handleStartTaskFocus}
       />
 
       <SearchModal
@@ -466,6 +771,17 @@ export function App() {
         onTriggerAIPrompt={prompt => {
           setCurrentTab('ai');
         }}
+        onOpenGroupMessageTodo={() => setIsGroupMessageModalOpen(true)}
+      />
+
+      {/* AI Group Message Todo Extractor Modal */}
+      <GroupMessageTodoModal
+        isOpen={isGroupMessageModalOpen}
+        onClose={() => setIsGroupMessageModalOpen(false)}
+        onImportToTasks={async (task) => {
+          await handleSaveTask(task);
+        }}
+        showToast={showToast}
       />
 
       {/* PWA Immersion & Desktop Installation Modal */}
@@ -477,6 +793,32 @@ export function App() {
         deferredPrompt={deferredPrompt}
         onPromptInstall={handlePromptInstall}
         onShowToast={showToast}
+      />
+
+      {/* Shared Task Recipient Prompt Modal */}
+      <SharedTaskPromptModal
+        sharedTask={sharedTaskToPrompt}
+        isOpen={Boolean(sharedTaskToPrompt)}
+        onConfirm={handleConfirmImportSharedTask}
+        onClose={handleDismissSharedTask}
+      />
+
+      {/* Milestone Unlock Celebration Toast (Rich Badge Emblem Card + Chime + Quick Actions) */}
+      <MilestoneUnlockToast
+        equippedBadgeId={user.equipped_badge_id}
+        onEquipBadge={async (badgeId) => {
+          saveEquippedBadgeId(badgeId);
+          const updatedUser = await CampusAPI.updateUserProfile({
+            equipped_badge_id: badgeId,
+          });
+          setUser(updatedUser);
+          showToast('✨ 已佩戴新解锁的专注里程碑勋章！');
+        }}
+        onNavigateToProfile={() => {
+          setIsFocusMode(false);
+          setIsTaskModalOpen(false);
+          setCurrentTab('profile');
+        }}
       />
 
       {/* Toast Alert Banner (Liquid Glass) */}

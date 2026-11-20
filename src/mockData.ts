@@ -1,4 +1,4 @@
-import { UserProfile, Course, Notice, Task, AIStudyTool, AppSettings } from './types';
+import { UserProfile, Course, Notice, Task, AIStudyTool, AppSettings, CustomTaskCategory } from './types';
 
 export const INITIAL_USER: UserProfile = {
   student_id: '20260309108',
@@ -18,10 +18,14 @@ export const INITIAL_USER: UserProfile = {
   net_status: 'online',
   cas_sync_status: 'synced',
   last_sync_time: '2026-08-31 07:45',
+  xp: 220,
+  level: 2,
 };
 
 export const INITIAL_SETTINGS: AppSettings = {
   theme: 'light',
+  accent_color: 'blue',
+  glass_preset: 'deep_depth',
   current_week: 1,
   semester_name: '2026-2027学年 第一学期 (秋季)',
   semester_start_date: '2026-08-31',
@@ -366,6 +370,8 @@ export const INITIAL_TASKS: Task[] = [
     remind_before_hours: 2,
     auto_tag_label: '考试复习',
     auto_tag_icon: 'GraduationCap',
+    is_weekly_goal: true,
+    tags: ['weekly-goal'],
   },
   {
     id: 't2',
@@ -381,6 +387,14 @@ export const INITIAL_TASKS: Task[] = [
     remind_before_hours: 4,
     auto_tag_label: '实验代码',
     auto_tag_icon: 'FlaskConical',
+    is_weekly_goal: true,
+    tags: ['weekly-goal'],
+    subtasks: [
+      { id: 'st_t2_1', title: '完成三维立体零件建模与尺寸标定', is_completed: true },
+      { id: 'st_t2_2', title: '正等轴测图投影绘制与剖面线生成', is_completed: true },
+      { id: 'st_t2_3', title: '检查公差配合标注与图框图层规范', is_completed: false },
+      { id: 'st_t2_4', title: '导出高分辨率 DWG 与标准 PDF 图纸', is_completed: false },
+    ],
   },
   {
     id: 't3',
@@ -393,6 +407,14 @@ export const INITIAL_TASKS: Task[] = [
     created_at: '2026-08-29',
     auto_tag_label: '论文报告',
     auto_tag_icon: 'FileText',
+    custom_category_id: 'cc_postgrad',
+    custom_category_name: '考研/升学科研',
+    project_tag: '科研学术',
+    subtasks: [
+      { id: 'st_t3_1', title: '精读 2 篇顶会扩散模型经典论文并做文献笔记', is_completed: true },
+      { id: 'st_t3_2', title: '梳理研究技术路线图与实验基线对比方案', is_completed: false },
+      { id: 'st_t3_3', title: '撰写开题报告背景与创新点论述 (3000字)', is_completed: false },
+    ],
   },
   {
     id: 't4',
@@ -405,6 +427,9 @@ export const INITIAL_TASKS: Task[] = [
     created_at: '2026-08-30',
     auto_tag_label: '会议研讨',
     auto_tag_icon: 'Users',
+    custom_category_id: 'cc_challenge_cup',
+    custom_category_name: '挑战杯创业项目',
+    project_tag: '挑战杯项目',
   },
   {
     id: 't5',
@@ -419,6 +444,46 @@ export const INITIAL_TASKS: Task[] = [
     created_at: '2026-08-29',
     auto_tag_label: '课程作业',
     auto_tag_icon: 'BookOpen',
+    custom_category_id: 'cc_math',
+    custom_category_name: '高等数学 (上)',
+    is_recurring: true,
+    recurrence_pattern: 'weekly',
+    recurrence_interval: 1,
+    recurrence_streak: 2,
+    is_weekly_goal: true,
+    tags: ['weekly-goal'],
+  },
+  {
+    id: 't_habit_english',
+    title: '每日学术习惯：考研英语真题核心长难句精析与自习打卡',
+    description: '每日坚持 25 分钟深度学习，攻克高频学术长难句，完成打卡后系统自动顺延生成下一周期。',
+    category: 'personal',
+    priority: 'medium',
+    deadline: `${new Date().toISOString().split('T')[0]} 23:59`,
+    is_completed: false,
+    created_at: new Date().toISOString().split('T')[0],
+    auto_tag_label: '习惯打卡',
+    auto_tag_icon: 'Target',
+    is_recurring: true,
+    recurrence_pattern: 'daily',
+    recurrence_interval: 1,
+    recurrence_streak: 4,
+  },
+  {
+    id: 't_habit_monthly_review',
+    title: '每月学业与科研复盘：汇总自习工时、GPA预期与阶段目标',
+    description: '每月固定复盘总结当月各科学习进度、错题本回顾及下月考试/作业排期规划。',
+    category: 'personal',
+    priority: 'medium',
+    deadline: '2026-09-30 22:00',
+    is_completed: false,
+    created_at: '2026-08-31',
+    auto_tag_label: '月度复盘',
+    auto_tag_icon: 'Target',
+    is_recurring: true,
+    recurrence_pattern: 'monthly',
+    recurrence_interval: 1,
+    recurrence_streak: 1,
   },
   {
     id: 't6',
@@ -457,6 +522,45 @@ export const INITIAL_TASKS: Task[] = [
     created_at: '2026-08-28',
     auto_tag_label: '事务申报',
     auto_tag_icon: 'Award',
+    is_weekly_goal: true,
+    tags: ['weekly-goal'],
+  },
+];
+
+export const INITIAL_CUSTOM_CATEGORIES: CustomTaskCategory[] = [
+  {
+    id: 'cc_challenge_cup',
+    name: '挑战杯创业项目',
+    color: 'purple',
+    type: 'project',
+    iconName: 'Sparkles',
+    created_at: '2026-08-30',
+  },
+  {
+    id: 'cc_math',
+    name: '高等数学 (上)',
+    color: 'blue',
+    type: 'course',
+    course_id: 'c1',
+    course_name: '高等数学 (上)',
+    iconName: 'BookOpen',
+    created_at: '2026-08-30',
+  },
+  {
+    id: 'cc_postgrad',
+    name: '考研/升学科研',
+    color: 'indigo',
+    type: 'project',
+    iconName: 'GraduationCap',
+    created_at: '2026-08-30',
+  },
+  {
+    id: 'cc_acm',
+    name: 'ACM程序设计竞赛',
+    color: 'emerald',
+    type: 'project',
+    iconName: 'Target',
+    created_at: '2026-08-30',
   },
 ];
 

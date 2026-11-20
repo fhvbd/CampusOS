@@ -14,26 +14,34 @@ import {
   Layers,
   BookOpen
 } from 'lucide-react';
-import { Course, AppSettings } from '../types';
+import { Course, AppSettings, Task } from '../types';
 import { PERIOD_TIMES, COURSE_COLOR_MAP, getDayName, getFullDayName } from '../lib/utils';
+import { MonthCalendarView } from './MonthCalendarView';
+import { ScheduleDeepWorkVisualizer } from './ScheduleDeepWorkVisualizer';
 
 interface ScheduleTabProps {
   courses: Course[];
   settings: AppSettings;
+  tasks?: Task[];
   onSelectCourse: (course: Course) => void;
+  onSelectTask?: (task: Task) => void;
   onOpenAddCourse: () => void;
   onAskAIForStudyPlan: () => void;
+  onSaveTask?: (task: Task) => void;
 }
 
 export const ScheduleTab: React.FC<ScheduleTabProps> = ({
   courses,
   settings,
+  tasks = [],
   onSelectCourse,
+  onSelectTask,
   onOpenAddCourse,
   onAskAIForStudyPlan,
+  onSaveTask,
 }) => {
   const [selectedWeek, setSelectedWeek] = useState<number>(settings.current_week || 1);
-  const [viewMode, setViewMode] = useState<'week' | 'day' | 'exam'>('week');
+  const [viewMode, setViewMode] = useState<'week' | 'day' | 'month' | 'exam'>('week');
   const [selectedDay, setSelectedDay] = useState<number>(1); // Monday = 1
 
   // Filter courses active in selected week
@@ -121,6 +129,15 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
                 }`}
               >
                 日视图
+              </button>
+              <button
+                id="schedule-view-month"
+                onClick={() => setViewMode('month')}
+                className={`px-4 py-2 rounded-xl cursor-pointer transition-all ${
+                  viewMode === 'month' ? 'bg-linear-to-r from-blue-600 to-indigo-600 text-white shadow-md shadow-blue-500/25 font-black border border-white/30' : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                月历与日程
               </button>
               <button
                 id="schedule-view-exam"
@@ -375,6 +392,28 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
           </div>
         </div>
       )}
+
+      {/* 4. Month Calendar & Deadline View */}
+      {viewMode === 'month' && (
+        <MonthCalendarView
+          courses={courses}
+          tasks={tasks}
+          settings={settings}
+          onSelectCourse={onSelectCourse}
+          onSelectTask={onSelectTask}
+          onSaveTask={onSaveTask}
+        />
+      )}
+
+      {/* 4.5. Deep-Work & Restorative Break Pattern Visualization Card */}
+      <ScheduleDeepWorkVisualizer
+        courses={courses}
+        tasks={tasks}
+        selectedWeek={selectedWeek}
+        selectedDay={viewMode === 'day' ? selectedDay : undefined}
+        onSaveTask={onSaveTask}
+        onSelectTask={onSelectTask}
+      />
 
       {/* 5. AI Study Plan Generator Banner (Liquid Glass Holographic with Breathing Room) */}
       <div className="glass-panel rounded-3xl p-6 sm:p-8 flex flex-col sm:flex-row sm:items-center justify-between gap-6 border border-purple-300/60 bg-linear-to-r from-purple-500/10 via-indigo-500/10 to-blue-500/10 shadow-md shadow-purple-500/5">

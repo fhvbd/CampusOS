@@ -28,14 +28,18 @@ import { ChatMessage, AIStudyTool, Course, Task } from '../types';
 import { AI_STUDY_TOOLS } from '../mockData';
 import { CampusAPI } from '../services/api';
 import { PomodoroTimer } from './PomodoroTimer';
+import { FocusMusicPlayer } from './FocusMusicPlayer';
+import { SessionSummaryData } from '../services/sessionSummaryAI';
 
 interface AIAssistantTabProps {
   courses: Course[];
+  tasks?: Task[];
   onAddTaskFromAI: (title: string, deadline?: string) => void;
 }
 
 export const AIAssistantTab: React.FC<AIAssistantTabProps> = ({
   courses,
+  tasks = [],
   onAddTaskFromAI,
 }) => {
   const [messages, setMessages] = useState<ChatMessage[]>([
@@ -204,16 +208,57 @@ export const AIAssistantTab: React.FC<AIAssistantTabProps> = ({
         </div>
       </div>
 
-      {/* 2.5. Pomodoro Focus Timer with Custom Time & Break Suggestions */}
+      {/* 2.4. Focus Music Lo-Fi Study Playlists & Ambient Soundscapes */}
+      <FocusMusicPlayer />
+
+      {/* 2.5. Pomodoro Focus Timer with Custom Time, Break Suggestions & Session Summary */}
       <PomodoroTimer 
-        onSuggestBreak={(breakMinutes) => {
+        courses={courses}
+        tasks={tasks}
+        onAddTaskFromAI={onAddTaskFromAI}
+        onAskAI={handleSendMessage}
+        onSessionComplete={(summary) => {
+          // Send rich Session Summary recap & follow-up study topics to conversation
+          const recapLine = summary.tasksRecap.completedTasks.length > 0
+            ? `\n\n**✅ 本次完成关联待办清单：**\n` + summary.tasksRecap.completedTasks.map(t => `- 🎯 ${t}`).join('\n')
+            : `\n\n**📖 学程成效复盘：**\n${summary.tasksRecap.summaryText}`;
+
+          const topicsSection = summary.followUpTopics.map((topic, i) => 
+            `\n**${i + 1}. ${topic.title}** \`[${topic.difficulty}]\`\n> ${topic.description}`
+          ).join('\n');
+
+          const summaryMsg: ChatMessage = {
+            id: `summary_chat_${Date.now()}`,
+            role: 'assistant',
+            content: `### ⏱️ 番茄钟专注学程小结与复盘 · 【${summary.subject}】
+
+🎉 **太棒了！已顺利完成 ${summary.durationMinutes} 分钟深度专注冲刺！**
+*今日累计专注 ${summary.totalFocusMinutesToday} 分钟 · 共达成 ${summary.completedSessionsToday} 个番茄钟周期*
+
+${summary.aiEncouragement}
+${recapLine}
+
+---
+### 💡 AI 智能推荐后续进阶学习主题 (Follow-up Study Topics)：
+${topicsSection}
+
+---
+> 💬 **即刻行动**：点击下方快捷提问胶囊，我将为您即时深度剖析上述进阶考点、推导过程，或为您生成专项自测真题！`,
+            timestamp: summary.completedAt,
+            suggested_actions: summary.followUpTopics.map(t => t.actionQuery),
+          };
+
+          setMessages(prev => [...prev, summaryMsg]);
+        }}
+        onSuggestBreak={(breakMinutes, subject) => {
           // Send friendly AI Assistant break message to conversation
+          const subjectTag = subject ? `【${subject}】` : '';
           const breakTip: ChatMessage = {
             id: `break_${Date.now()}`,
             role: 'assistant',
-            content: `☕ **深度专注周期完成提醒**\n\n太棒了！您刚刚完成了一个高强度的专注周期。根据认知科学与学习曲线，持续专注后大脑需要 **${breakMinutes} 分钟** 的休息来巩固短期记忆与神经突触连接。\n\n**建议的放松方式：**\n1. 离开屏幕，眺望远方绿色植物或窗外 20 秒以上\n2. 起身活动颈椎与腰背，喝一杯温开水\n3. 进行 3 次深慢腹式呼吸\n\n休息结束后我们继续高效冲刺！`,
+            content: `☕ **深度专注周期完成提醒 ${subjectTag}**\n\n太棒了！您刚刚完成了一个高强度的专注学习周期。根据认知科学与学习曲线，持续专注后大脑需要 **${breakMinutes} 分钟** 的微休息来巩固短期记忆与神经突触连接。\n\n**建议的放松方式：**\n1. 🌿 **20-20-20 用眼法则**：离开屏幕，眺望 6 米外的绿色植物或窗外 20 秒以上\n2. 💧 **起身补水**：站起身走动并活动颈椎与腰背，喝一杯温开水\n3. 🧘 **深慢呼吸**：进行 3 次深慢腹式呼吸，平复中枢神经\n\n休息结束后我们继续高效冲刺！`,
             timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-            suggested_actions: ['制定下一轮专注任务', '帮我整理高数复习考点', '抽查英语核心词汇'],
+            suggested_actions: ['制定下一轮专注冲刺计划', '帮我梳理本课程考点精要', '为我出两道自测模拟题'],
           };
           setMessages(prev => [...prev, breakTip]);
         }}
